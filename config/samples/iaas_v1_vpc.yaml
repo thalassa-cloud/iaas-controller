@@ -1,0 +1,12 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: VPC
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: vpc-sample
+spec:
+  region: nl-01
+  cidrBlocks:
+    - "10.0.0.0/16"
+  description: "Sample VPC"

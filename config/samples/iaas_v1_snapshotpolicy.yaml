@@ -1,0 +1,30 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: SnapshotPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: snapshotpolicy-sample
+spec:
+  region: nl-01
+  schedule: "0 2 * * *"   # daily at 2 AM (cron)
+  timezone: "UTC"
+  ttl: "168h"   # 7 days (Go duration: h, m, s)
+  # keepCount: 5     # optional: max snapshots to retain
+  enabled: true
+  description: "Sample snapshot policy"
+  target:
+    type: selector
+    selector:
+      backup: "true"
+  # Or target specific volumes by BlockVolume ref or identity:
+  # target:
+  #   type: explicit
+  #   volumes:
+  #     - name: blockvolume-sample
+  #     - id: "vol-abc123"
+  #     - name: other-volume
+  #       namespace: other-ns
+  # Optional: override name/labels in Thalassa
+  # metadata:
+  #   name: "custom-policy-name"

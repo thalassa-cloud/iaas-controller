@@ -1,0 +1,12 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: Subnet
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: subnet-sample
+spec:
+  vpcRef:
+    name: vpc-sample
+  cidr: "10.0.1.0/24"
+  description: "Sample subnet"

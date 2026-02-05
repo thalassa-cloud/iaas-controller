@@ -1,0 +1,26 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: Loadbalancer
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: loadbalancer-sample
+spec:
+  subnetRef:
+    name: subnet-sample
+  description: "Sample loadbalancer"
+  internalLoadbalancer: false
+  deleteProtection: false
+  # Optional: reference security groups by Kubernetes resource or by Thalassa identity
+  # securityGroupRefs:
+  #   - name: securitygroup-sample          # reference SecurityGroup CR by name (same namespace)
+  #   - name: my-sg
+  #     namespace: other-ns                # or another namespace
+  #   - identity: "sg-abc123"              # or use Thalassa identity directly
+  # Optional: add listeners that reference target groups
+  # listeners:
+  #   - name: http-80
+  #     port: 80
+  #     protocol: HTTP
+  #     targetGroupRef:
+  #       name: targetgroup-sample

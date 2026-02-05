@@ -1,0 +1,16 @@
+## Append samples of your project ##
+resources:
+- iaas_v1_vpc.yaml
+- iaas_v1_subnet.yaml
+- iaas_v1_securitygroup.yaml
+- iaas_v1_natgateway.yaml
+- iaas_v1_routetable.yaml
+- iaas_v1_routetableroute.yaml
+- iaas_v1_targetgroup.yaml
+- iaas_v1_vpcpeeringconnection.yaml
+- iaas_v1_loadbalancer.yaml
+- iaas_v1_blockvolume.yaml
+- iaas_v1_snapshot.yaml
+- iaas_v1_snapshotpolicy.yaml
+- iaas_v1_tfsinstance.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

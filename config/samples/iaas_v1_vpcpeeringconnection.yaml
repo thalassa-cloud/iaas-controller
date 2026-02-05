@@ -1,0 +1,18 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: VpcPeeringConnection
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: peering-sample
+spec:
+  requesterVpcRef:
+    name: vpc-sample
+  accepterVpcId: "<accepter-vpc-id>"
+  accepterOrganisationId: "<accepter-org-id>"
+  description: "Sample VPC peering connection"
+  # Set accept: true to accept when pending (e.g. for cross-org, accepter applies this)
+  # accept: true
+  # Set reject: true to reject when pending
+  # reject: true
+  # rejectReason: "Not needed"

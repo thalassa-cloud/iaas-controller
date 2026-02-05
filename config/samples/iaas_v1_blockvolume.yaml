@@ -1,0 +1,20 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: BlockVolume
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: blockvolume-sample
+spec:
+  size: 10
+  region: nl-01
+  volumeTypeId: block
+  description: "Sample block volume"
+  deleteProtection: false
+  # Optional: restore from an existing snapshot (snapshot must be in the same region)
+  # restoreFromSnapshotIdentity: "snapshot-identity"
+  # Optional: override name/labels in Thalassa
+  # metadata:
+  #   name: "custom-name"
+  #   labels:
+  #     env: prod

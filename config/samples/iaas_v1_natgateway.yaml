@@ -1,0 +1,16 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: NatGateway
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: natgateway-sample
+spec:
+  subnetRef:
+    name: subnet-sample
+  configureDefaultRoute: true
+  description: "Sample NAT gateway for outbound internet"
+  # Optional: reference security groups by Kubernetes resource or by Thalassa identity
+  # securityGroupRefs:
+  #   - name: securitygroup-sample
+  #   - identity: "sg-abc123"

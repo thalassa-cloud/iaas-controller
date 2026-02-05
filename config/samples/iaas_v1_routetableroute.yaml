@@ -1,0 +1,19 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: RouteTableRoute
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: default-route-sample
+spec:
+  routeTableRef:
+    name: routetable-sample
+  destinationCidrBlock: "10.0.0.0/16"
+  # Reference a NatGateway or VpcPeeringConnection by resource (controller resolves to ID)
+  targetGatewayRef:
+    kind: NatGateway
+    name: natgateway-sample
+    # namespace: default   # optional, defaults to same namespace
+  # Or set the gateway ID directly:
+  # targetNatGatewayId: "<nat-gateway-id>"
+  # targetVpcPeeringConnectionId: "<vpc-peering-id>"

@@ -1,0 +1,11 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: RouteTable
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: routetable-sample
+spec:
+  vpcRef:
+    name: vpc-sample
+  description: "Sample route table"

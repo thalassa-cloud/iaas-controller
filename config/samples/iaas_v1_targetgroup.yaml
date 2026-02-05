@@ -1,0 +1,17 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: TargetGroup
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: targetgroup-sample
+spec:
+  vpcRef:
+    name: vpc-sample
+  targetPort: 80
+  protocol: tcp
+  description: "Sample target group for load balancer"
+  # Optional: attach specific servers by Thalassa server identity
+  # attachments:
+  #   - serverIdentity: "<server-identity>"
+  #     endpointIdentity: ""  # optional

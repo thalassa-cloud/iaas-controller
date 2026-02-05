@@ -1,0 +1,28 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: TfsInstance
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: tfsinstance-sample
+spec:
+  # region is optional; when empty, derived from the VPC's region
+  # region: "nl-01"
+  vpcRef:
+    name: vpc-sample
+    # namespace: default   # optional
+  subnetRef:
+    name: subnet-sample
+    # namespace: default   # optional
+  sizeGB: 10
+  description: "Sample TFS (Thalassa Filesystem Service) instance"
+  deleteProtection: false
+  # Optional: attach security groups by Kubernetes resource or Thalassa identity
+  # securityGroupRefs:
+  #   - name: securitygroup-sample
+  #   - identity: "sg-abc123"
+  # Optional: override name/labels in Thalassa
+  # metadata:
+  #   name: "custom-tfs-name"
+  #   labels:
+  #     env: prod

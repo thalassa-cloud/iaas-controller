@@ -1,0 +1,238 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.0
+  name: snapshotpolicies.iaas.controllers.thalassa.cloud
+spec:
+  group: iaas.controllers.thalassa.cloud
+  names:
+    kind: SnapshotPolicy
+    listKind: SnapshotPolicyList
+    plural: snapshotpolicies
+    singular: snapshotpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.region
+      name: Region
+      type: string
+    - jsonPath: .spec.schedule
+      name: Schedule
+      type: string
+    - jsonPath: .status.resourceId
+      name: Resource ID
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: SnapshotPolicy is the Schema for the snapshot policies API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: SnapshotPolicySpec defines the desired state of a SnapshotPolicy.
+            properties:
+              description:
+                description: Description is an optional description of the policy.
+                type: string
+              enabled:
+                description: Enabled controls whether the policy creates new snapshots.
+                type: boolean
+              keepCount:
+                description: KeepCount is the maximum number of snapshots to retain.
+                  When reached, oldest snapshots are deleted. If not set, only TTL
+                  applies.
+                format: int32
+                type: integer
+              metadata:
+                description: Metadata allows optional name and label overrides for
+                  the created resource in Thalassa.
+                properties:
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels are applied to the resource in Thalassa. If
+                      not set, no labels are sent (API default applies).
+                    type: object
+                  name:
+                    description: Name overrides the name of the resource in Thalassa.
+                      If not set, the Kubernetes object name is used.
+                    type: string
+                type: object
+              region:
+                description: Region is the Thalassa region identity or slug where
+                  the policy operates. Volumes must be in this region.
+                type: string
+              schedule:
+                description: Schedule is a cron expression for when to create snapshots
+                  (e.g. "0 2 * * *" for daily at 2 AM).
+                type: string
+              target:
+                description: Target defines which volumes are included in the policy.
+                properties:
+                  selector:
+                    additionalProperties:
+                      type: string
+                    description: Selector is a map of label key-value pairs when Type
+                      is "selector". Only volumes matching all labels are included.
+                    type: object
+                  type:
+                    description: 'Type is how targets are identified: "selector" (by
+                      labels) or "explicit" (by volume identities).'
+                    enum:
+                    - selector
+                    - explicit
+                    type: string
+                  volumes:
+                    description: Volumes is a list of volume references (BlockVolume
+                      by name or Thalassa identity) when Type is "explicit".
+                    items:
+                      description: VolumeRef references a BlockVolume by Kubernetes
+                        object or by Thalassa identity.
+                      properties:
+                        id:
+                          description: id is the Thalassa volume Id. If set, the controller
+                            uses this directly.
+                          type: string
+                        name:
+                          description: Name is the name of the BlockVolume resource
+                            in Kubernetes.
+                          type: string
+                        namespace:
+                          description: Namespace is the namespace of the BlockVolume
+                            resource. Defaults to the same namespace as the referencing
+                            resource.
+                          type: string
+                      type: object
+                    type: array
+                required:
+                - type
+                type: object
+              timezone:
+                description: Timezone is the IANA timezone for the schedule (e.g.
+                  "UTC", "Europe/Amsterdam").
+                type: string
+              ttl:
+                description: TTL is how long snapshots created by this policy are
+                  retained before automatic deletion.
+                type: string
+            required:
+            - region
+            - schedule
+            - target
+            - timezone
+            - ttl
+            type: object
+          status:
+            description: SnapshotPolicyStatus defines the observed state of SnapshotPolicy.
+            properties:
+              conditions:
+                description: conditions represent the current state of the SnapshotPolicy
+                  resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastReconcileError:
+                description: LastReconcileError is the last error message from reconcile,
+                  if any. Cleared on success.
+                type: string
+              lastReconcileTime:
+                description: LastReconcileTime is when the controller last reconciled
+                  this resource.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the .metadata.generation last reconciled.
+                format: int64
+                type: integer
+              resourceId:
+                description: ResourceID is the Thalassa IaaS identity of the snapshot
+                  policy.
+                type: string
+              resourceStatus:
+                description: ResourceStatus is the status of the resource in Thalassa
+                  (e.g. ready, pending).
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

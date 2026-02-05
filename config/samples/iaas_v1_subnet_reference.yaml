@@ -1,0 +1,11 @@
+# Reference to an already-provisioned subnet in Thalassa. Does not create/update/delete the cloud subnet.
+# Use the Thalassa IaaS identity (resource ID) of the existing subnet. Other resources can refer to this CR by name.
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: Subnet
+metadata:
+  name: current
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  resourceId: "<thalassa-subnet-identity>"  # e.g. the identity from Thalassa API / console

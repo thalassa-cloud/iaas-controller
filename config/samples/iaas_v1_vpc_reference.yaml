@@ -1,0 +1,11 @@
+# Reference to an already-provisioned VPC in Thalassa. Does not create/update/delete the cloud VPC.
+# Use the Thalassa IaaS identity (resource ID) of the existing VPC. Other resources can refer to this CR by name.
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: VPC
+metadata:
+  name: current
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  resourceId: "<thalassa-vpc-identity>"  # e.g. the identity from Thalassa API / console

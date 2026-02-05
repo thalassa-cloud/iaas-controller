@@ -1,0 +1,21 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: Snapshot
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: snapshot-sample
+spec:
+  volumeRef:
+    name: blockvolume-sample
+    # namespace: default   # optional, defaults to same namespace
+  # Or reference by Thalassa volume identity:
+  # volumeRef:
+  #   identity: "vol-abc123"
+  description: "Sample snapshot of block volume"
+  deleteProtection: false
+  # Optional: override name/labels in Thalassa
+  # metadata:
+  #   name: "custom-snapshot-name"
+  #   labels:
+  #     backup: "daily"

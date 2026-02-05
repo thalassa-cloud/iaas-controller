@@ -1,0 +1,32 @@
+apiVersion: iaas.controllers.thalassa.cloud/v1
+kind: SecurityGroup
+metadata:
+  labels:
+    app.kubernetes.io/name: iaas-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: securitygroup-sample
+spec:
+  vpcRef:
+    name: vpc-sample
+  allowSameGroupTraffic: true
+  ingressRules:
+    - protocol: tcp
+      portRangeMin: 80
+      portRangeMax: 80
+      remoteAddress: "0.0.0.0/0"
+      policy: allow
+    - protocol: tcp
+      portRangeMin: 443
+      portRangeMax: 443
+      remoteAddress: "0.0.0.0/0"
+      policy: allow
+    - protocol: tcp
+      portRangeMin: 22
+      portRangeMax: 22
+      remoteAddress: "0.0.0.0/0"
+      policy: allow
+  egressRules:
+    - protocol: all
+      remoteAddress: "0.0.0.0/0"
+      policy: allow
+  description: "Sample security group"
