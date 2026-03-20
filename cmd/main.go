@@ -44,8 +44,9 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-const iaasClientEnvHint = "unable to create IaaS client; set thalassa-url, organisation, " +
-	"thalassa-token, thalassa-client-id, thalassa-client-secret"
+const iaasClientEnvHint = "unable to create IaaS client; set organisation and one of: " +
+	"thalassa-service-account-id (OIDC token exchange, uses in-cluster SA token by default), " +
+	"thalassa-token, or thalassa-client-id + thalassa-client-secret"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -88,6 +89,7 @@ func main() {
 
 	// Thalassa flags (bound to viper after Parse so iaas client can read them)
 	var thalassaToken, thalassaClientID, thalassaClientSecret, thalassaURL, thalassaRegion, organisation string
+	var thalassaServiceAccountID, thalassaSubjectTokenFile, thalassaSubjectToken, thalassaOIDCTokenURL, thalassaAccessTokenLifetime string
 	var thalassaInsecure bool
 	flag.StringVar(&thalassaToken, "thalassa-token", "", "Thalassa Cloud access token")
 	flag.StringVar(&thalassaClientID, "thalassa-client-id", "", "Thalassa Cloud client ID")
@@ -96,6 +98,11 @@ func main() {
 	flag.StringVar(&thalassaURL, "thalassa-url", "https://api.thalassa.cloud/", "Thalassa Cloud API URL")
 	flag.StringVar(&thalassaRegion, "thalassa-region", "", "Thalassa Cloud region slug or identity")
 	flag.StringVar(&organisation, "organisation", "", "Thalassa Cloud organisation ID or Slug")
+	flag.StringVar(&thalassaServiceAccountID, "thalassa-service-account-id", "", "Thalassa service account ID for OIDC token exchange (federated workload identity); uses Kubernetes SA token file by default")
+	flag.StringVar(&thalassaSubjectTokenFile, "thalassa-subject-token-file", "", "Path to subject JWT for token exchange (default: in-cluster service account token path when unset)")
+	flag.StringVar(&thalassaSubjectToken, "thalassa-subject-token", "", "Inline subject JWT for token exchange (alternative to subject token file)")
+	flag.StringVar(&thalassaOIDCTokenURL, "thalassa-oidc-token-url", "", "OIDC token endpoint (default: {thalassa-url}/oidc/token)")
+	flag.StringVar(&thalassaAccessTokenLifetime, "thalassa-access-token-lifetime", "", "Optional exchanged access token lifetime (e.g. 39600s)")
 
 	opts := zap.Options{
 		Development: true,
@@ -103,14 +110,41 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	iaas.BindThalassaViperEnv()
+
 	// Bind Thalassa flag values to viper so internal/iaas client can read them
-	viper.Set("thalassa-token", thalassaToken)
-	viper.Set("thalassa-client-id", thalassaClientID)
-	viper.Set("thalassa-client-secret", thalassaClientSecret)
+	if thalassaToken != "" {
+		viper.Set("thalassa-token", thalassaToken)
+	}
+	if thalassaClientID != "" {
+		viper.Set("thalassa-client-id", thalassaClientID)
+	}
+	if thalassaClientSecret != "" {
+		viper.Set("thalassa-client-secret", thalassaClientSecret)
+	}
 	viper.Set("thalassa-insecure", thalassaInsecure)
 	viper.Set("thalassa-url", thalassaURL)
-	viper.Set("thalassa-region", thalassaRegion)
-	viper.Set("organisation", organisation)
+	if thalassaRegion != "" {
+		viper.Set("thalassa-region", thalassaRegion)
+	}
+	if organisation != "" {
+		viper.Set("organisation", organisation)
+	}
+	if thalassaServiceAccountID != "" {
+		viper.Set("thalassa-service-account-id", thalassaServiceAccountID)
+	}
+	if thalassaSubjectTokenFile != "" {
+		viper.Set("thalassa-subject-token-file", thalassaSubjectTokenFile)
+	}
+	if thalassaSubjectToken != "" {
+		viper.Set("thalassa-subject-token", thalassaSubjectToken)
+	}
+	if thalassaOIDCTokenURL != "" {
+		viper.Set("thalassa-oidc-token-url", thalassaOIDCTokenURL)
+	}
+	if thalassaAccessTokenLifetime != "" {
+		viper.Set("thalassa-access-token-lifetime", thalassaAccessTokenLifetime)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 

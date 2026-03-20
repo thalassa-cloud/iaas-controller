@@ -1,0 +1,9 @@
+apiVersion: v2
+name: iaas-controller
+description: Helm chart for deploying the Thalassa Cloud IaaS controller
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+sources:
+  - 'https://github.com/thalassa-cloud/iaas-controller'
+

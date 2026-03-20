@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "iaasController.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "iaasController.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.minAvailable }}
+  selector:
+    matchLabels:
+    {{- include "iaasController.selectorLabels" . | nindent 6 }}
