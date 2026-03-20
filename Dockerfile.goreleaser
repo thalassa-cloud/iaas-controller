@@ -1,5 +1,5 @@
 FROM gcr.io/distroless/static:nonroot
 EXPOSE 8080 2112
 
-COPY thalassa-iaas-controller /thalassa-iaas-controller
-ENTRYPOINT ["/thalassa-iaas-controller"]
+COPY iaas-controller /iaas-controller
+ENTRYPOINT ["/iaas-controller"]

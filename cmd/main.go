@@ -89,7 +89,8 @@ func main() {
 
 	// Thalassa flags (bound to viper after Parse so iaas client can read them)
 	var thalassaToken, thalassaClientID, thalassaClientSecret, thalassaURL, thalassaRegion, organisation string
-	var thalassaServiceAccountID, thalassaSubjectTokenFile, thalassaSubjectToken, thalassaOIDCTokenURL, thalassaAccessTokenLifetime string
+	var thalassaServiceAccountID, thalassaSubjectTokenFile, thalassaSubjectToken string
+	var thalassaOIDCTokenURL, thalassaAccessTokenLifetime string
 	var thalassaInsecure bool
 	flag.StringVar(&thalassaToken, "thalassa-token", "", "Thalassa Cloud access token")
 	flag.StringVar(&thalassaClientID, "thalassa-client-id", "", "Thalassa Cloud client ID")
@@ -98,11 +99,17 @@ func main() {
 	flag.StringVar(&thalassaURL, "thalassa-url", "https://api.thalassa.cloud/", "Thalassa Cloud API URL")
 	flag.StringVar(&thalassaRegion, "thalassa-region", "", "Thalassa Cloud region slug or identity")
 	flag.StringVar(&organisation, "organisation", "", "Thalassa Cloud organisation ID or Slug")
-	flag.StringVar(&thalassaServiceAccountID, "thalassa-service-account-id", "", "Thalassa service account ID for OIDC token exchange (federated workload identity); uses Kubernetes SA token file by default")
-	flag.StringVar(&thalassaSubjectTokenFile, "thalassa-subject-token-file", "", "Path to subject JWT for token exchange (default: in-cluster service account token path when unset)")
-	flag.StringVar(&thalassaSubjectToken, "thalassa-subject-token", "", "Inline subject JWT for token exchange (alternative to subject token file)")
-	flag.StringVar(&thalassaOIDCTokenURL, "thalassa-oidc-token-url", "", "OIDC token endpoint (default: {thalassa-url}/oidc/token)")
-	flag.StringVar(&thalassaAccessTokenLifetime, "thalassa-access-token-lifetime", "", "Optional exchanged access token lifetime (e.g. 39600s)")
+	flag.StringVar(&thalassaServiceAccountID, "thalassa-service-account-id", "",
+		"Thalassa service account ID for OIDC token exchange (federated workload identity); "+
+			"uses Kubernetes SA token file by default")
+	flag.StringVar(&thalassaSubjectTokenFile, "thalassa-subject-token-file", "",
+		"Path to subject JWT for token exchange (default: in-cluster service account token path when unset)")
+	flag.StringVar(&thalassaSubjectToken, "thalassa-subject-token", "",
+		"Inline subject JWT for token exchange (alternative to subject token file)")
+	flag.StringVar(&thalassaOIDCTokenURL, "thalassa-oidc-token-url", "",
+		"OIDC token endpoint (default: {thalassa-url}/oidc/token)")
+	flag.StringVar(&thalassaAccessTokenLifetime, "thalassa-access-token-lifetime", "",
+		"Optional exchanged access token lifetime (e.g. 39600s)")
 
 	opts := zap.Options{
 		Development: true,
