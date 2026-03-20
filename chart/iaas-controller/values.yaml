@@ -133,8 +133,7 @@ hpa:
     averageUtilization: 90
 
 # enable or disable the deployment of the Service monitor
-enableServiceMonitor: true
-
+enableServiceMonitor: false
 
 leaderElection:
   enabled: false

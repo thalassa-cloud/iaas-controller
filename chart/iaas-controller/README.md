@@ -47,10 +47,10 @@ tcloud iam workload-identity-federation bootstrap kubernetes \
   --cluster <cluster-identity> \
   --namespace thalassa-iaas-controller \
   --service-account iaas-controller \
-  --role iaas:FullAccess
+  --role iaas:FullAdminAccess
 ```
 
-The above bootstraps a federated identity for a newly created service account with the thalassa IAM rolebinding `iaas:FullAccess`, for the Kubernetes serviceaccount `thalassa-iaas-controller/iaas-controller`. Make sure that the namespace and serviceaccount match with the Iaas Controller deployment's.
+The above bootstraps a federated identity for a newly created service account with the thalassa IAM rolebinding `iaas:FullAdminAccess`, for the Kubernetes serviceaccount `thalassa-iaas-controller/iaas-controller`. Make sure that the namespace and serviceaccount match with the Iaas Controller deployment's.
 
 **Personal access token**
 

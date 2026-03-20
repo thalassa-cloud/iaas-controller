@@ -144,9 +144,9 @@ spec:
           {{- end }}
           ports:
             - name: metrics
-              containerPort: 4569
+              containerPort: 8080
             - name: health
-              containerPort: 4570
+              containerPort: 8081
           volumeMounts:
             - name: tempdir
               mountPath: /tmp
