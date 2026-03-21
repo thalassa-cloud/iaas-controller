@@ -39,7 +39,7 @@ thalassa:
 
   tokenExchange:
     serviceAccountId: ""
-    # If set, THALASSA_SUBJECT_TOKEN_FILE points here (you mount the token yourself).
+    # If set, --thalassa-subject-token-file points here (you mount the token yourself).
     # If empty and projectedToken.enabled is true, the chart mounts a projected service account token.
     subjectTokenFile: ""
     subjectToken: ""
@@ -57,16 +57,19 @@ thalassa:
       expirationSeconds: 3600
 
   pat:
-    # Name of Secret containing the token (key below). Prefer this over token.
+    # Secret is mounted as a volume; the controller reads the token from a file (no THALASSA_* env).
     existingSecret: ""
     secretKey: token
-    # Optional literal token for testing only (do not commit real tokens).
-    token: ""
+    mountPath: /var/run/secrets/thalassa-pat
+    # Filename inside mountPath (must match Kubernetes secret items path)
+    secretFilename: token
 
   oidcClientCredentials:
     clientId: ""
     existingSecret: ""
     clientSecretKey: client-secret
+    mountPath: /var/run/secrets/thalassa-oidc
+    clientSecretFilename: client-secret
 
 replicaCount: 1
 minAvailable: 1

@@ -14,13 +14,12 @@ Set `thalassa.enabled: true` and configure **one** of the following (`authMethod
 
 | `authMethod` | Description |
 |--------------|-------------|
-| `tokenExchange` | Federated workload identity: exchanges the pod’s Kubernetes service account JWT for a Thalassa API token via `POST` to `{url}/oidc/token`. Requires `thalassa.tokenExchange.serviceAccountId` (Thalassa service account ID). By default the chart mounts a **projected** service account token (`tokenExchange.projectedToken`) and sets `THALASSA_SUBJECT_TOKEN_FILE` to that path; set `projectedToken.enabled: false` and optionally `subjectTokenFile` to use the legacy automounted token path instead. |
-| `pat` | Personal access token: mount from a Kubernetes `Secret` (`thalassa.pat.existingSecret` + `secretKey`) or set `thalassa.pat.token` for testing only. |
-| `oidcClientCredentials` | OAuth2 client credentials: `thalassa.oidcClientCredentials.clientId` and client secret from `existingSecret` / `clientSecretKey`. |
+| `tokenExchange` | Federated workload identity: exchanges the pod’s Kubernetes service account JWT for a Thalassa API token via `POST` to `{url}/oidc/token`. Requires `thalassa.tokenExchange.serviceAccountId` (Thalassa service account ID). By default the chart mounts a **projected** service account token (`tokenExchange.projectedToken`) and passes `--thalassa-subject-token-file` to that path; set `projectedToken.enabled: false` and optionally `subjectTokenFile` to use the legacy automounted token path instead. |
+| `pat` | Personal access token: the chart mounts your Kubernetes `Secret` (`thalassa.pat.existingSecret`) at `thalassa.pat.mountPath` and passes `--thalassa-token-file` to the mounted key file (see `secretKey` / `secretFilename`). |
+| `oidcClientCredentials` | OAuth2 client credentials: `thalassa.oidcClientCredentials.clientId` and client secret mounted from `existingSecret` at `oidcClientCredentials.mountPath` (`--thalassa-client-secret-file`). |
 
-Environment variables match `internal/iaas` (`THALASSA_*`). See also `BindThalassaViperEnv()` in the controller.
 
-If `thalassa.enabled` is `false`, no `THALASSA_*` env vars are injected; supply credentials with `envFrom` (e.g. External Secrets Operator).
+If `thalassa.enabled` is `false`, supply the same flags via `extraArgs` (and any secrets via additional volumes), or use a wrapper that sets flags.
 
 ### Examples
 
@@ -34,7 +33,7 @@ thalassa:
   authMethod: tokenExchange
   tokenExchange:
     serviceAccountId: "<thalassa-service-account-id>"
-    # Default: projected SA token volume + THALASSA_SUBJECT_TOKEN_FILE. Optional:
+    # Default: projected SA token volume + --thalassa-subject-token-file. Optional:
     # projectedToken:
     #   audience: "https://api.thalassa.cloud/"  # set if your federated identity requires it
     # subjectTokenFile: "/var/run/secrets/..."   # overrides projected volume

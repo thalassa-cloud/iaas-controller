@@ -44,9 +44,10 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-const iaasClientEnvHint = "unable to create IaaS client; set organisation and one of: " +
-	"thalassa-service-account-id (OIDC token exchange, uses in-cluster SA token by default), " +
-	"thalassa-token, or thalassa-client-id + thalassa-client-secret"
+const iaasClientHint = "unable to create IaaS client; set --organisation and one of: " +
+	"--thalassa-service-account-id (OIDC token exchange; uses in-cluster SA token path by default), " +
+	"--thalassa-token-file or --thalassa-token, or --thalassa-client-id with " +
+	"--thalassa-client-secret-file or --thalassa-client-secret"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -87,17 +88,29 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false, "If set, HTTP/2 will be enabled for the metrics and webhook servers")
 
-	// Thalassa flags (bound to viper after Parse so iaas client can read them)
-	var thalassaToken, thalassaClientID, thalassaClientSecret, thalassaURL, thalassaRegion, organisation string
+	// Thalassa flags (bound to viper after Parse so iaas client can read them).
+	// Prefer file flags for secrets (mounted volumes).
+	var (
+		thalassaToken, thalassaTokenFile, thalassaClientID         string
+		thalassaClientSecret, thalassaClientSecretFile             string
+		thalassaURL, thalassaRegion, organisation, thalassaProject string
+	)
 	var thalassaServiceAccountID, thalassaSubjectTokenFile, thalassaSubjectToken string
 	var thalassaOIDCTokenURL, thalassaAccessTokenLifetime string
 	var thalassaInsecure bool
-	flag.StringVar(&thalassaToken, "thalassa-token", "", "Thalassa Cloud access token")
-	flag.StringVar(&thalassaClientID, "thalassa-client-id", "", "Thalassa Cloud client ID")
-	flag.StringVar(&thalassaClientSecret, "thalassa-client-secret", "", "Thalassa Cloud client secret")
+	flag.StringVar(&thalassaToken, "thalassa-token", "",
+		"Thalassa personal access token (prefer --thalassa-token-file for production)")
+	flag.StringVar(&thalassaTokenFile, "thalassa-token-file", "",
+		"Path to file containing Thalassa personal access token (e.g. mounted Kubernetes secret)")
+	flag.StringVar(&thalassaClientID, "thalassa-client-id", "", "Thalassa Cloud client ID (OAuth2 client credentials)")
+	flag.StringVar(&thalassaClientSecret, "thalassa-client-secret", "",
+		"Thalassa client secret (prefer --thalassa-client-secret-file for production)")
+	flag.StringVar(&thalassaClientSecretFile, "thalassa-client-secret-file", "",
+		"Path to file containing OAuth2 client secret")
 	flag.BoolVar(&thalassaInsecure, "thalassa-insecure", false, "Use insecure connection to Thalassa Cloud API")
 	flag.StringVar(&thalassaURL, "thalassa-url", "https://api.thalassa.cloud/", "Thalassa Cloud API URL")
 	flag.StringVar(&thalassaRegion, "thalassa-region", "", "Thalassa Cloud region slug or identity")
+	flag.StringVar(&thalassaProject, "thalassa-project", "", "Optional Thalassa project scope")
 	flag.StringVar(&organisation, "organisation", "", "Thalassa Cloud organisation ID or Slug")
 	flag.StringVar(&thalassaServiceAccountID, "thalassa-service-account-id", "",
 		"Thalassa service account ID for OIDC token exchange (federated workload identity); "+
@@ -117,11 +130,12 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	iaas.BindThalassaViperEnv()
-
-	// Bind Thalassa flag values to viper so internal/iaas client can read them
+	// Thalassa settings for internal/iaas (flags only; do not use THALASSA_* env for controller config)
 	if thalassaToken != "" {
 		viper.Set("thalassa-token", thalassaToken)
+	}
+	if thalassaTokenFile != "" {
+		viper.Set("thalassa-token-file", thalassaTokenFile)
 	}
 	if thalassaClientID != "" {
 		viper.Set("thalassa-client-id", thalassaClientID)
@@ -129,10 +143,16 @@ func main() {
 	if thalassaClientSecret != "" {
 		viper.Set("thalassa-client-secret", thalassaClientSecret)
 	}
+	if thalassaClientSecretFile != "" {
+		viper.Set("thalassa-client-secret-file", thalassaClientSecretFile)
+	}
 	viper.Set("thalassa-insecure", thalassaInsecure)
 	viper.Set("thalassa-url", thalassaURL)
 	if thalassaRegion != "" {
 		viper.Set("thalassa-region", thalassaRegion)
+	}
+	if thalassaProject != "" {
+		viper.Set("thalassa-project", thalassaProject)
 	}
 	if organisation != "" {
 		viper.Set("organisation", organisation)
@@ -248,7 +268,7 @@ func main() {
 
 	thalassaClient, err := iaas.NewClientFromEnv()
 	if err != nil {
-		setupLog.Error(err, iaasClientEnvHint)
+		setupLog.Error(err, iaasClientHint)
 		os.Exit(1)
 	}
 	iaasClient, err := thalassaiaas.New(thalassaClient)
