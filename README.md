@@ -48,7 +48,83 @@ kubectl apply -k config/samples/
 
 >**NOTE**: Ensure that the samples has default values to test it out.
 
-### To Uninstall
+## Deploy with Helm and workload identity federation
+
+For production-style installs from the published OCI chart, the recommended authentication mode is **OIDC token exchange**: the controller uses the in-cluster Kubernetes service account token as a *subject token*, exchanges it at Thalassa’s token endpoint for an API access token, and calls the IaaS API with that token. That flow is set up with **workload identity federation** so Thalassa trusts tokens from your cluster’s service account.
+
+### Prerequisites
+
+- Thalassa `tcloud` CLI (or your org’s equivalent) with permission to run workload-identity bootstrap.
+- Your **organisation** ID and **cluster** identity in Thalassa (from the console or your platform team).
+- Helm 3.x and access to the chart registry (`oci://ghcr.io/thalassa-cloud/charts/…`).
+
+### 1. Bootstrap federated identity
+
+Before installing the controller, register the Kubernetes service account that the chart will use (default name `iaas-controller` in namespace `thalassa-iaas-controller`) with Thalassa IAM. The bootstrap command creates the federated binding and a Thalassa **service account** used for token exchange; you need its ID for Helm.
+
+Example (adjust cluster ID, namespace, SA name, and role to match your environment):
+
+```bash
+export ORGANISATION_ID="<your-org-id>"
+export CLUSTER_ID="<your-cluster-id>"
+
+tcloud iam workload-identity-federation bootstrap kubernetes \
+  --cluster "$CLUSTER_ID" \
+  --namespace thalassa-iaas-controller \
+  --service-account iaas-controller \
+  --role iaas:FullAdminAccess
+```
+
+Copy **Thalassa service account ID** from the command output or UI (for example `sa-…`) into `THALASSA_SERVICE_ACCOUNT_ID` for the next step.
+
+### 2. Helm values (token exchange)
+
+Enable Thalassa, set your organisation, and configure `authMethod: tokenExchange` with the service account ID from bootstrap. The chart mounts a **projected** service account token and passes `--thalassa-subject-token-file` so the controller never relies on `THALASSA_*` environment variables for client configuration.
+
+```yaml
+thalassa:
+  enabled: true
+  url: "https://api.thalassa.cloud/"
+  organisation: "<ORGANISATION_ID>"
+  authMethod: tokenExchange
+  tokenExchange:
+    serviceAccountId: "<THALASSA_SERVICE_ACCOUNT_ID>"
+    projectedToken:
+      enabled: true
+      audience: "https://api.thalassa.cloud/"
+
+serviceAccount:
+  create: true
+```
+
+You can merge this into a `values.yaml` file or set the same keys with `helm --set` (see below).
+
+### 3. Install CRDs and controller
+
+Install CRDs first, then the controller chart. Pin the chart version you intend to run (examples use a tag; replace with the current release).
+
+```bash
+export ORGANISATION_ID="<ORGANISATION_ID>"
+export THALASSA_SERVICE_ACCOUNT_ID="<THALASSA_SERVICE_ACCOUNT_ID>"
+
+helm upgrade --install iaas-controller-crds oci://ghcr.io/thalassa-cloud/charts/iaas-controller-crds:<version> \
+  --namespace thalassa-iaas-controller \
+  --create-namespace
+
+helm upgrade --install iaas-controller oci://ghcr.io/thalassa-cloud/charts/iaas-controller:<version> \
+  --namespace thalassa-iaas-controller \
+  --create-namespace \
+  --set thalassa.organisation="$ORGANISATION_ID" \
+  --set thalassa.tokenExchange.serviceAccountId="$THALASSA_SERVICE_ACCOUNT_ID" \
+  --set enableServiceMonitor=false
+```
+
+Other auth methods (personal access token, OAuth2 client credentials) and more chart options are documented in [`chart/iaas-controller/README.md`](chart/iaas-controller/README.md).
+
+**Step-by-step copy/paste** (concrete namespace, chart versions, and optional `tcloud` profile notes) lives in [`deploy/README.md`](deploy/README.md). For **Flux CD**, see [`deploy/flux/README.md`](deploy/flux/README.md).
+
+## To Uninstall
+
 **Delete the instances (CRs) from the cluster:**
 
 ```sh

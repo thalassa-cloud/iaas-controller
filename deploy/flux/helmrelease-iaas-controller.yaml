@@ -1,0 +1,37 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta2
+kind: HelmRelease
+metadata:
+  name: iaas-controller
+  namespace: flux-system
+spec:
+  interval: 10m
+  timeout: 15m
+  targetNamespace: thalassa-iaas-controller
+  install:
+    createNamespace: true
+  dependsOn:
+    - name: iaas-controller-crds
+      namespace: flux-system
+  chart:
+    spec:
+      chart: iaas-controller
+      version: "0.2.2"
+      sourceRef:
+        kind: HelmRepository
+        name: thalassa-cloud-charts
+        namespace: flux-system
+  values:
+    enableServiceMonitor: false
+    thalassa:
+      enabled: true
+      url: "https://api.thalassa.cloud/"
+      # Replace with your organisation ID (or use valuesFrom for GitOps secrets).
+      organisation: "o-<org-id>"
+      authMethod: tokenExchange
+      tokenExchange:
+        serviceAccountId: "sa-<serviceaccount-id>"
+        projectedToken:
+          enabled: true
+          audience: "https://api.thalassa.cloud/"
+    serviceAccount:
+      create: true
