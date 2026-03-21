@@ -74,6 +74,12 @@ minAvailable: 1
 service:
   type: ClusterIP
 
+# Optional ClusterRoles for end-users (not bound by the chart): bind them to users or groups with
+# ClusterRoleBinding / RoleBinding, e.g. --clusterrole=thalassa:iaas:reader
+rbac:
+  userRoles:
+    enabled: true
+
 serviceAccount:
   # Specifies whether a service account should be created
   create: true

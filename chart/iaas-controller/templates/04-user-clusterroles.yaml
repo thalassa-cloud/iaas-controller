@@ -1,0 +1,123 @@
+{{- if .Values.rbac.userRoles.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: thalassa:iaas:reader
+  labels:
+    {{- include "iaasController.userClusterRoleLabels" . | nindent 4 }}
+    rbac.thalassa.cloud/iaas-role: reader
+  annotations:
+    rbac.thalassa.cloud/description: "Read-only access to Thalassa IaaS custom resources (get/list/watch)."
+rules:
+- apiGroups:
+  - iaas.controllers.thalassa.cloud
+  resources:
+  - blockvolumes
+  - loadbalancers
+  - natgateways
+  - routetableroutes
+  - routetables
+  - securitygroups
+  - snapshotpolicies
+  - snapshots
+  - subnets
+  - targetgroups
+  - tfsinstances
+  - vpcpeeringconnections
+  - vpcs
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: thalassa:iaas:editor
+  labels:
+    {{- include "iaasController.userClusterRoleLabels" . | nindent 4 }}
+    rbac.thalassa.cloud/iaas-role: editor
+  annotations:
+    rbac.thalassa.cloud/description: "Create, update, and delete Thalassa IaaS resources (spec); does not grant status or finalizer writes."
+rules:
+- apiGroups:
+  - iaas.controllers.thalassa.cloud
+  resources:
+  - blockvolumes
+  - loadbalancers
+  - natgateways
+  - routetableroutes
+  - routetables
+  - securitygroups
+  - snapshotpolicies
+  - snapshots
+  - subnets
+  - targetgroups
+  - tfsinstances
+  - vpcpeeringconnections
+  - vpcs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: thalassa:iaas:admin
+  labels:
+    {{- include "iaasController.userClusterRoleLabels" . | nindent 4 }}
+    rbac.thalassa.cloud/iaas-role: admin
+  annotations:
+    rbac.thalassa.cloud/description: "Full management of Thalassa IaaS resources including status updates; finalizers remain controller-only."
+rules:
+- apiGroups:
+  - iaas.controllers.thalassa.cloud
+  resources:
+  - blockvolumes
+  - loadbalancers
+  - natgateways
+  - routetableroutes
+  - routetables
+  - securitygroups
+  - snapshotpolicies
+  - snapshots
+  - subnets
+  - targetgroups
+  - tfsinstances
+  - vpcpeeringconnections
+  - vpcs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - iaas.controllers.thalassa.cloud
+  resources:
+  - blockvolumes/status
+  - loadbalancers/status
+  - natgateways/status
+  - routetableroutes/status
+  - routetables/status
+  - securitygroups/status
+  - snapshotpolicies/status
+  - snapshots/status
+  - subnets/status
+  - targetgroups/status
+  - tfsinstances/status
+  - vpcpeeringconnections/status
+  - vpcs/status
+  verbs:
+  - get
+  - patch
+  - update
+{{- end }}

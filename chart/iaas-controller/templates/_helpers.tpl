@@ -66,3 +66,13 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Labels for optional end-user ClusterRoles (thalassa:iaas:reader, etc.) — not the operator workload.
+*/}}
+{{- define "iaasController.userClusterRoleLabels" -}}
+{{ include "iaasController.baseLabels" . }}
+app.kubernetes.io/name: {{ include "iaasController.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: user-rbac
+{{- end }}
