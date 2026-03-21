@@ -16,7 +16,6 @@ Both releases use `targetNamespace: thalassa-iaas-controller` and `install.creat
 
 - Flux [installed](https://fluxcd.io/flux/installation/) on the cluster (at least source-controller and helm-controller).
 - Workload identity federation bootstrapped for the controller service account; see [deploy/README.md](../README.md).
-- Adjust `spec.chart.spec.version` to match the chart version you run (examples use `0.2.2`; published OCI tags may be `v0.2.2`—set the Helm `version` field to whatever `helm search` / your registry reports).
 
 ## Apply
 
