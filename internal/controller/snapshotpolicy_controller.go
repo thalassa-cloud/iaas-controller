@@ -58,7 +58,7 @@ type SnapshotPolicyReconciler struct {
 
 // Reconcile moves the current state of a SnapshotPolicy toward the desired spec by creating or updating the policy in Thalassa IaaS.
 func (r *SnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var sp iaasv1.SnapshotPolicy
 	if err := r.Get(ctx, req.NamespacedName, &sp); err != nil {
@@ -79,6 +79,7 @@ func (r *SnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	if controllerutil.AddFinalizer(&sp, snapshotpolicyFinalizer) {
 		if err := r.Update(ctx, &sp); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -92,7 +93,7 @@ func (r *SnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			if errors.Is(err, ErrDependencyNotReady) {
 				return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 			}
-			return r.setSnapshotPolicyErrorCondition(ctx, &sp, "VolumeNotFound", err.Error(), err)
+			return r.setSnapshotPolicyErrorCondition(ctx, &sp, "Reconcile", "VolumeNotFound", err.Error(), err)
 		}
 	}
 
@@ -110,10 +111,11 @@ func toThalassaTarget(t iaasv1.SnapshotPolicyTarget, volumeIdentities []string) 
 }
 
 func (r *SnapshotPolicyReconciler) createSnapshotPolicy(ctx context.Context, sp iaasv1.SnapshotPolicy, volumeIdentities []string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createSnapshotPolicy")
 
 	SetStandardConditions(&sp.Status.Conditions, ConditionStateProgressing, "Creating", "Creating snapshot policy in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &sp); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -136,13 +138,14 @@ func (r *SnapshotPolicyReconciler) createSnapshotPolicy(ctx context.Context, sp 
 	}
 	created, err := r.IaaSClient.CreateSnapshotPolicy(ctx, createReq)
 	if err != nil {
-		return r.setSnapshotPolicyErrorCondition(ctx, &sp, "FailedCreate", err.Error(), err)
+		return r.setSnapshotPolicyErrorCondition(ctx, &sp, "createSnapshotPolicy", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	sp.Status.ResourceID = identity
 	sp.Status.LastReconcileError = ""
 	SetStandardConditions(&sp.Status.Conditions, ConditionStateAvailable, "Created", "Snapshot policy is created in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &sp); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	log.Info("created snapshot policy in Thalassa", "identity", identity)
@@ -150,7 +153,7 @@ func (r *SnapshotPolicyReconciler) createSnapshotPolicy(ctx context.Context, sp 
 }
 
 func (r *SnapshotPolicyReconciler) reconcileSnapshotPolicy(ctx context.Context, sp iaasv1.SnapshotPolicy, volumeIdentities []string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileSnapshotPolicy")
 	identity := sp.Status.ResourceID
 	if identity == "" {
 		return r.createSnapshotPolicy(ctx, sp, volumeIdentities)
@@ -161,16 +164,18 @@ func (r *SnapshotPolicyReconciler) reconcileSnapshotPolicy(ctx context.Context, 
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&sp.Status.Conditions, ConditionStateDegraded, "NotFound", "Snapshot policy not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &sp); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setSnapshotPolicyErrorCondition(ctx, &sp, "NotFound", "Snapshot policy not found in Thalassa", err)
+			return r.setSnapshotPolicyErrorCondition(ctx, &sp, "reconcileSnapshotPolicy", "NotFound", "Snapshot policy not found in Thalassa", err)
 		}
-		return r.setSnapshotPolicyErrorCondition(ctx, &sp, "GetFailed", "Failed to get snapshot policy from Thalassa", err)
+		return r.setSnapshotPolicyErrorCondition(ctx, &sp, "reconcileSnapshotPolicy", "GetFailed", "Failed to get snapshot policy from Thalassa", err)
 	}
 
 	if r.requiresUpdate(&sp, fetched, volumeIdentities) {
 		SetStandardConditions(&sp.Status.Conditions, ConditionStateProgressing, "Updating", "Updating snapshot policy in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &sp); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		keepCount := (*int)(nil)
@@ -190,26 +195,31 @@ func (r *SnapshotPolicyReconciler) reconcileSnapshotPolicy(ctx context.Context, 
 			Target:      toThalassaTarget(sp.Spec.Target, volumeIdentities),
 		})
 		if err != nil {
-			return r.setSnapshotPolicyErrorCondition(ctx, &sp, "FailedUpdate", err.Error(), err)
+			return r.setSnapshotPolicyErrorCondition(ctx, &sp, "reconcileSnapshotPolicy", "FailedUpdate", err.Error(), err)
 		}
 		log.Info("updated snapshot policy in Thalassa", "identity", identity)
 	}
 
 	SetStandardConditions(&sp.Status.Conditions, ConditionStateAvailable, "Reconciled", "Snapshot policy is up to date")
 	sp.Status.LastReconcileError = ""
-	return ctrl.Result{}, r.updateStatusWithRetry(ctx, &sp)
+	if updateErr := r.updateStatusWithRetry(ctx, &sp); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
+		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *SnapshotPolicyReconciler) reconcileDelete(ctx context.Context, sp *iaasv1.SnapshotPolicy) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	identity := sp.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteSnapshotPolicy(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
-			return r.setSnapshotPolicyErrorCondition(ctx, sp, "DeleteFailed", err.Error(), err)
+			return r.setSnapshotPolicyErrorCondition(ctx, sp, "reconcileDelete", "DeleteFailed", err.Error(), err)
 		}
 	}
 	if controllerutil.RemoveFinalizer(sp, snapshotpolicyFinalizer) {
 		if err := r.Update(ctx, sp); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -228,10 +238,13 @@ func (r *SnapshotPolicyReconciler) updateStatusWithRetry(ctx context.Context, sp
 	})
 }
 
-func (r *SnapshotPolicyReconciler) setSnapshotPolicyErrorCondition(ctx context.Context, sp *iaasv1.SnapshotPolicy, reason, message string, err error) (ctrl.Result, error) {
+func (r *SnapshotPolicyReconciler) setSnapshotPolicyErrorCondition(ctx context.Context, sp *iaasv1.SnapshotPolicy, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&sp.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		sp.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, sp); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

@@ -58,7 +58,7 @@ type SecurityGroupReconciler struct {
 
 // Reconcile moves the current state of a SecurityGroup toward the desired spec by creating or updating the resource in Thalassa IaaS.
 func (r *SecurityGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var sg iaasv1.SecurityGroup
 	if err := r.Get(ctx, req.NamespacedName, &sg); err != nil {
@@ -79,6 +79,7 @@ func (r *SecurityGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	if controllerutil.AddFinalizer(&sg, securityGroupFinalizer) {
 		if err := r.Update(ctx, &sg); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -89,13 +90,13 @@ func (r *SecurityGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setSecurityGroupErrorCondition(ctx, &sg, "VPCNotFound", err.Error(), err)
+		return r.setSecurityGroupErrorCondition(ctx, &sg, "Reconcile", "VPCNotFound", err.Error(), err)
 	}
 	return r.reconcileSecurityGroup(ctx, sg, vpcIdentity)
 }
 
 func (r *SecurityGroupReconciler) createSecurityGroup(ctx context.Context, sg iaasv1.SecurityGroup, vpcIdentity string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createSecurityGroup")
 	allowSame := true
 	if sg.Spec.AllowSameGroupTraffic != nil {
 		allowSame = *sg.Spec.AllowSameGroupTraffic
@@ -103,6 +104,7 @@ func (r *SecurityGroupReconciler) createSecurityGroup(ctx context.Context, sg ia
 
 	SetStandardConditions(&sg.Status.Conditions, ConditionStateProgressing, "Creating", "Creating security group in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -117,26 +119,28 @@ func (r *SecurityGroupReconciler) createSecurityGroup(ctx context.Context, sg ia
 	}
 	created, err := r.IaaSClient.CreateSecurityGroup(ctx, createReq)
 	if err != nil {
-		return r.setSecurityGroupErrorCondition(ctx, &sg, "FailedCreate", err.Error(), err)
+		return r.setSecurityGroupErrorCondition(ctx, &sg, "createSecurityGroup", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	sg.Status.ResourceID = identity
 	sg.Status.ResourceStatus = string(created.Status)
 	sg.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	log.Info("created security group in Thalassa", "identity", identity)
 
 	SetStandardConditions(&sg.Status.Conditions, ConditionStateAvailable, "Created", "Security group is created in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *SecurityGroupReconciler) reconcileSecurityGroup(ctx context.Context, sg iaasv1.SecurityGroup, vpcIdentity string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileSecurityGroup")
 	identity := sg.Status.ResourceID
 	if identity == "" {
 		return r.createSecurityGroup(ctx, sg, vpcIdentity)
@@ -147,17 +151,19 @@ func (r *SecurityGroupReconciler) reconcileSecurityGroup(ctx context.Context, sg
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&sg.Status.Conditions, ConditionStateDegraded, "NotFound", "Security group not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setSecurityGroupErrorCondition(ctx, &sg, "NotFound", "Security group not found in Thalassa", err)
+			return r.setSecurityGroupErrorCondition(ctx, &sg, "reconcileSecurityGroup", "NotFound", "Security group not found in Thalassa", err)
 		}
-		return r.setSecurityGroupErrorCondition(ctx, &sg, "GetFailed", "Failed to get security group from Thalassa", err)
+		return r.setSecurityGroupErrorCondition(ctx, &sg, "reconcileSecurityGroup", "GetFailed", "Failed to get security group from Thalassa", err)
 	}
 
 	if sg.Status.ResourceStatus != string(fetched.Status) {
 		sg.Status.ResourceStatus = string(fetched.Status)
 		sg.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -169,6 +175,7 @@ func (r *SecurityGroupReconciler) reconcileSecurityGroup(ctx context.Context, sg
 		}
 		SetStandardConditions(&sg.Status.Conditions, ConditionStateProgressing, "Updating", "Updating security group in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
@@ -182,25 +189,28 @@ func (r *SecurityGroupReconciler) reconcileSecurityGroup(ctx context.Context, sg
 			EgressRules:           toThalassaRules(sg.Spec.EgressRules),
 		})
 		if err != nil {
-			return r.setSecurityGroupErrorCondition(ctx, &sg, "UpdateFailed", err.Error(), err)
+			return r.setSecurityGroupErrorCondition(ctx, &sg, "reconcileSecurityGroup", "UpdateFailed", err.Error(), err)
 		}
 		sg.Status.ResourceStatus = string(updated.Status)
 		sg.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		fetched, err = r.IaaSClient.GetSecurityGroup(ctx, identity)
 		if err != nil {
-			return r.setSecurityGroupErrorCondition(ctx, &sg, "GetFailed", "Failed to get security group after update", err)
+			return r.setSecurityGroupErrorCondition(ctx, &sg, "reconcileSecurityGroup", "GetFailed", "Failed to get security group after update", err)
 		}
 		sg.Status.ResourceStatus = string(fetched.Status)
 		if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
 
 	SetStandardConditions(&sg.Status.Conditions, ConditionStateAvailable, "Synced", "Security group is synced with Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &sg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
@@ -214,6 +224,7 @@ func (r *SecurityGroupReconciler) reconcileDelete(ctx context.Context, sg *iaasv
 	identity := sg.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteSecurityGroup(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete security group in Thalassa")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted security group in Thalassa", "identity", identity)
@@ -237,10 +248,13 @@ func (r *SecurityGroupReconciler) updateStatusWithRetry(ctx context.Context, sg 
 	})
 }
 
-func (r *SecurityGroupReconciler) setSecurityGroupErrorCondition(ctx context.Context, sg *iaasv1.SecurityGroup, reason, message string, err error) (ctrl.Result, error) {
+func (r *SecurityGroupReconciler) setSecurityGroupErrorCondition(ctx context.Context, sg *iaasv1.SecurityGroup, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&sg.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		sg.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, sg); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

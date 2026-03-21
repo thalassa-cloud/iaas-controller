@@ -24,7 +24,11 @@ import (
 	"github.com/spf13/viper"
 	thalassaiaas "github.com/thalassa-cloud/client-go/iaas"
 	"github.com/thalassa-cloud/client-go/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// thalassaLog is the logger for client setup (uses logf.Log; set ctrl.SetLogger before calling New* if you need output).
+var thalassaLog = logf.Log.WithName("thalassa-client")
 
 // DefaultKubernetesServiceAccountTokenPath is the default path for the projected or legacy
 // Kubernetes service account JWT. Used as SubjectTokenFile for OIDC token exchange when no
@@ -75,6 +79,15 @@ func NewFromEnv() (*thalassaiaas.Client, error) {
 		if oidcTokenURL == "" {
 			oidcTokenURL = defaultOIDCTokenURL(baseURL)
 		}
+		subjectSource := subjectTokenSource(subjectTok, subjectFile)
+		thalassaLog.Info("initializing Thalassa IaaS client from environment",
+			"baseURL", baseURL,
+			"organisation", org,
+			"auth", "oidc-token-exchange",
+			"serviceAccountId", saID,
+			"oidcTokenURL", oidcTokenURL,
+			"subjectTokenSource", subjectSource,
+		)
 		cfg := client.OIDCTokenExchangeConfig{
 			TokenURL:            oidcTokenURL,
 			SubjectToken:        subjectTok,
@@ -85,16 +98,44 @@ func NewFromEnv() (*thalassaiaas.Client, error) {
 		}
 		opts = append(opts, client.WithAuthOIDCTokenExchange(cfg))
 	} else if token != "" {
+		thalassaLog.Info("initializing Thalassa IaaS client from environment",
+			"baseURL", baseURL,
+			"organisation", org,
+			"auth", "personal-access-token",
+		)
 		opts = append(opts, client.WithAuthPersonalToken(token))
 	} else {
-		return nil, fmt.Errorf("set THALASSA_SERVICE_ACCOUNT_ID and organisation for OIDC token exchange, or THALASSA_PERSONAL_ACCESS_TOKEN / THALASSA_TOKEN")
+		err := fmt.Errorf("set THALASSA_SERVICE_ACCOUNT_ID and organisation for OIDC token exchange, or THALASSA_PERSONAL_ACCESS_TOKEN / THALASSA_TOKEN")
+		thalassaLog.Error(err, "Thalassa client configuration invalid",
+			"baseURL", baseURL, "organisationSet", org != "", "hasServiceAccountId", saID != "", "hasPersonalToken", token != "",
+		)
+		return nil, err
 	}
 
 	baseClient, err := client.NewClient(opts...)
 	if err != nil {
+		thalassaLog.Error(err, "failed to create Thalassa HTTP client", "baseURL", baseURL)
 		return nil, err
 	}
-	return thalassaiaas.New(baseClient)
+	iaasClient, err := thalassaiaas.New(baseClient)
+	if err != nil {
+		thalassaLog.Error(err, "failed to wrap Thalassa IaaS client", "baseURL", baseURL)
+		return nil, err
+	}
+	thalassaLog.Info("Thalassa IaaS client ready", "baseURL", baseURL)
+	return iaasClient, nil
+}
+
+// subjectTokenSource describes where the workload JWT comes from (no secret values).
+func subjectTokenSource(subjectTok, subjectFile string) string {
+	switch {
+	case subjectTok != "":
+		return "env"
+	case subjectFile != "":
+		return "file"
+	default:
+		return "unknown"
+	}
 }
 
 // BindThalassaViperEnv binds environment variables for Thalassa settings used by NewClientFromEnv.
@@ -166,6 +207,16 @@ func NewClientFromEnv() (client.Client, error) {
 		if oidcTokenURL == "" {
 			oidcTokenURL = tokenURL
 		}
+		thalassaLog.Info("initializing Thalassa client (viper/env)",
+			"baseURL", baseURL,
+			"organisation", org,
+			"auth", "oidc-token-exchange",
+			"serviceAccountId", serviceAccountID,
+			"oidcTokenURL", oidcTokenURL,
+			"subjectTokenSource", subjectTokenSource(subjectToken, subjectTokenFile),
+			"insecure", insecure,
+			"projectSet", project != "",
+		)
 		cfg := client.OIDCTokenExchangeConfig{
 			TokenURL:            oidcTokenURL,
 			SubjectToken:        subjectToken,
@@ -176,20 +227,45 @@ func NewClientFromEnv() (client.Client, error) {
 		}
 		opts = append(opts, client.WithAuthOIDCTokenExchange(cfg))
 	case personalAccessToken != "":
+		thalassaLog.Info("initializing Thalassa client (viper/env)",
+			"baseURL", baseURL,
+			"organisation", org,
+			"auth", "personal-access-token",
+			"insecure", insecure,
+			"projectSet", project != "",
+		)
 		opts = append(opts, client.WithAuthPersonalToken(personalAccessToken))
 	case clientID != "" && clientSecret != "":
+		thalassaLog.Info("initializing Thalassa client (viper/env)",
+			"baseURL", baseURL,
+			"organisation", org,
+			"auth", "oidc-client-credentials",
+			"oidcTokenURL", tokenURL,
+			"insecure", insecure,
+			"projectSet", project != "",
+		)
 		if insecure {
 			opts = append(opts, client.WithAuthOIDCInsecure(clientID, clientSecret, tokenURL, insecure))
 		} else {
 			opts = append(opts, client.WithAuthOIDC(clientID, clientSecret, tokenURL))
 		}
 	default:
-		return nil, fmt.Errorf("configure OIDC token exchange (thalassa-service-account-id + organisation), thalassa-token, or thalassa-client-id + thalassa-client-secret")
+		err := fmt.Errorf("configure OIDC token exchange (thalassa-service-account-id + organisation), thalassa-token, or thalassa-client-id + thalassa-client-secret")
+		thalassaLog.Error(err, "Thalassa client configuration invalid",
+			"baseURL", baseURL,
+			"organisationSet", org != "",
+			"hasServiceAccountId", serviceAccountID != "",
+			"hasPersonalToken", personalAccessToken != "",
+			"hasClientCredentials", clientID != "" && clientSecret != "",
+		)
+		return nil, err
 	}
 
 	thalassaClient, err := client.NewClient(opts...)
 	if err != nil {
+		thalassaLog.Error(err, "failed to create Thalassa HTTP client", "baseURL", baseURL)
 		return nil, fmt.Errorf("failed to create thalassa client: %w", err)
 	}
+	thalassaLog.Info("Thalassa HTTP client ready", "baseURL", baseURL)
 	return thalassaClient, nil
 }

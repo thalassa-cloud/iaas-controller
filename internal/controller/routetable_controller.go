@@ -58,7 +58,7 @@ type RouteTableReconciler struct {
 
 // Reconcile moves the current state of a RouteTable toward the desired spec.
 func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var rt iaasv1.RouteTable
 	if err := r.Get(ctx, req.NamespacedName, &rt); err != nil {
@@ -89,7 +89,7 @@ func (r *RouteTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setRouteTableErrorCondition(ctx, &rt, "VPCNotFound", err.Error(), err)
+		return r.setRouteTableErrorCondition(ctx, &rt, "Reconcile", "VPCNotFound", err.Error(), err)
 	}
 	return r.reconcileRouteTable(ctx, rt, vpcIdentity)
 }
@@ -103,6 +103,7 @@ func (r *RouteTableReconciler) createRouteTable(ctx context.Context, rt iaasv1.R
 
 	SetStandardConditions(&rt.Status.Conditions, ConditionStateProgressing, "Creating", "Creating route table in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &rt); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -113,26 +114,28 @@ func (r *RouteTableReconciler) createRouteTable(ctx context.Context, rt iaasv1.R
 		VpcIdentity: vpcIdentity,
 	})
 	if err != nil {
-		return r.setRouteTableErrorCondition(ctx, &rt, "FailedCreate", err.Error(), err)
+		return r.setRouteTableErrorCondition(ctx, &rt, "createRouteTable", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	rt.Status.ResourceID = identity
 	rt.Status.ResourceStatus = ResourceStatusReady
 	rt.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &rt); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	log.Info("created route table in Thalassa", "identity", identity)
 
 	SetStandardConditions(&rt.Status.Conditions, ConditionStateAvailable, "Created", "Route table is created in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &rt); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *RouteTableReconciler) reconcileRouteTable(ctx context.Context, rt iaasv1.RouteTable, vpcIdentity string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileRouteTable")
 	identity := rt.Status.ResourceID
 	if identity == "" {
 		return r.createRouteTable(ctx, rt, vpcIdentity)
@@ -143,17 +146,19 @@ func (r *RouteTableReconciler) reconcileRouteTable(ctx context.Context, rt iaasv
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&rt.Status.Conditions, ConditionStateDegraded, "NotFound", "Route table not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &rt); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setRouteTableErrorCondition(ctx, &rt, "NotFound", "Route table not found in Thalassa", err)
+			return r.setRouteTableErrorCondition(ctx, &rt, "reconcileRouteTable", "NotFound", "Route table not found in Thalassa", err)
 		}
-		return r.setRouteTableErrorCondition(ctx, &rt, "GetFailed", "Failed to get route table from Thalassa", err)
+		return r.setRouteTableErrorCondition(ctx, &rt, "reconcileRouteTable", "GetFailed", "Failed to get route table from Thalassa", err)
 	}
 
 	if r.requiresUpdate(&rt, fetched) {
 		log.Info("updating route table in Thalassa", "identity", identity)
 		SetStandardConditions(&rt.Status.Conditions, ConditionStateProgressing, "Updating", "Updating route table in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &rt); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
@@ -168,36 +173,40 @@ func (r *RouteTableReconciler) reconcileRouteTable(ctx context.Context, rt iaasv
 			Labels:      effectiveLabels(rt.Spec.Metadata),
 		})
 		if err != nil {
-			return r.setRouteTableErrorCondition(ctx, &rt, "UpdateFailed", err.Error(), err)
+			return r.setRouteTableErrorCondition(ctx, &rt, "reconcileRouteTable", "UpdateFailed", err.Error(), err)
 		}
 		rt.Status.ResourceStatus = ResourceStatusReady
 		rt.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &rt); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
 
 	SetStandardConditions(&rt.Status.Conditions, ConditionStateAvailable, "Synced", "Route table is synced with Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &rt); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *RouteTableReconciler) reconcileDelete(ctx context.Context, rt *iaasv1.RouteTable) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	if !controllerutil.ContainsFinalizer(rt, routeTableFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	identity := rt.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteRouteTable(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete route table in Thalassa")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted route table in Thalassa", "identity", identity)
 	}
 	if controllerutil.RemoveFinalizer(rt, routeTableFinalizer) {
 		if err := r.Update(ctx, rt); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -215,10 +224,13 @@ func (r *RouteTableReconciler) updateStatusWithRetry(ctx context.Context, rt *ia
 	})
 }
 
-func (r *RouteTableReconciler) setRouteTableErrorCondition(ctx context.Context, rt *iaasv1.RouteTable, reason, message string, err error) (ctrl.Result, error) {
+func (r *RouteTableReconciler) setRouteTableErrorCondition(ctx context.Context, rt *iaasv1.RouteTable, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		rt.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, rt); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

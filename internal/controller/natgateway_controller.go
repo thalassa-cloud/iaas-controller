@@ -60,7 +60,7 @@ type NatGatewayReconciler struct {
 
 // Reconcile moves the current state of a NatGateway toward the desired spec by creating or updating the resource in Thalassa IaaS.
 func (r *NatGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var ngw iaasv1.NatGateway
 	if err := r.Get(ctx, req.NamespacedName, &ngw); err != nil {
@@ -81,6 +81,7 @@ func (r *NatGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	if controllerutil.AddFinalizer(&ngw, natGatewayFinalizer) {
 		if err := r.Update(ctx, &ngw); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -91,20 +92,20 @@ func (r *NatGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setNatGatewayErrorCondition(ctx, &ngw, "SubnetNotFound", err.Error(), err)
+		return r.setNatGatewayErrorCondition(ctx, &ngw, "Reconcile", "SubnetNotFound", err.Error(), err)
 	}
 	sgIdentities, err := r.resolveSecurityGroupRefs(ctx, ngw.Namespace, ngw.Spec.SecurityGroupRefs)
 	if err != nil {
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setNatGatewayErrorCondition(ctx, &ngw, "SecurityGroupNotFound", err.Error(), err)
+		return r.setNatGatewayErrorCondition(ctx, &ngw, "Reconcile", "SecurityGroupNotFound", err.Error(), err)
 	}
 	return r.reconcileNatGateway(ctx, ngw, subnetIdentity, sgIdentities)
 }
 
 func (r *NatGatewayReconciler) createNatGateway(ctx context.Context, ngw iaasv1.NatGateway, subnetIdentity string, sgIdentities []string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createNatGateway")
 	configureDefaultRoute := true
 	if ngw.Spec.ConfigureDefaultRoute != nil {
 		configureDefaultRoute = *ngw.Spec.ConfigureDefaultRoute
@@ -112,6 +113,7 @@ func (r *NatGatewayReconciler) createNatGateway(ctx context.Context, ngw iaasv1.
 
 	SetStandardConditions(&ngw.Status.Conditions, ConditionStateProgressing, "Creating", "Creating NAT gateway in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -125,13 +127,14 @@ func (r *NatGatewayReconciler) createNatGateway(ctx context.Context, ngw iaasv1.
 	}
 	created, err := r.IaaSClient.CreateNatGateway(ctx, createReq)
 	if err != nil {
-		return r.setNatGatewayErrorCondition(ctx, &ngw, "FailedCreate", err.Error(), err)
+		return r.setNatGatewayErrorCondition(ctx, &ngw, "createNatGateway", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	ngw.Status.ResourceID = identity
 	ngw.Status.ResourceStatus = created.Status
 	ngw.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	if _, err := r.IaaSClient.WaitUntilNatGatewayHasEndpoint(ctx, identity); err != nil {
@@ -143,7 +146,7 @@ func (r *NatGatewayReconciler) createNatGateway(ctx context.Context, ngw iaasv1.
 	// Re-fetch to get EndpointIP now that the gateway has an endpoint
 	fetched, err := r.IaaSClient.GetNatGateway(ctx, identity)
 	if err != nil {
-		return r.setNatGatewayErrorCondition(ctx, &ngw, "GetFailed", "Failed to get NAT gateway after create", err)
+		return r.setNatGatewayErrorCondition(ctx, &ngw, "createNatGateway", "GetFailed", "Failed to get NAT gateway after create", err)
 	}
 	ngw.Status.ResourceStatus = fetched.Status
 	ngw.Status.EndpointIP = fetched.EndpointIP
@@ -152,13 +155,14 @@ func (r *NatGatewayReconciler) createNatGateway(ctx context.Context, ngw iaasv1.
 	SetStandardConditions(&ngw.Status.Conditions, ConditionStateAvailable, "Created", "NAT gateway is created in Thalassa")
 	ngw.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *NatGatewayReconciler) reconcileNatGateway(ctx context.Context, ngw iaasv1.NatGateway, subnetIdentity string, sgIdentities []string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileNatGateway")
 	identity := ngw.Status.ResourceID
 	if identity == "" {
 		return r.createNatGateway(ctx, ngw, subnetIdentity, sgIdentities)
@@ -169,11 +173,12 @@ func (r *NatGatewayReconciler) reconcileNatGateway(ctx context.Context, ngw iaas
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&ngw.Status.Conditions, ConditionStateDegraded, "NotFound", "NAT gateway not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setNatGatewayErrorCondition(ctx, &ngw, "NotFound", "NAT gateway not found in Thalassa", err)
+			return r.setNatGatewayErrorCondition(ctx, &ngw, "reconcileNatGateway", "NotFound", "NAT gateway not found in Thalassa", err)
 		}
-		return r.setNatGatewayErrorCondition(ctx, &ngw, "GetFailed", "Failed to get NAT gateway from Thalassa", err)
+		return r.setNatGatewayErrorCondition(ctx, &ngw, "reconcileNatGateway", "GetFailed", "Failed to get NAT gateway from Thalassa", err)
 	}
 
 	// ensure the natgatewy has an endpoint
@@ -191,6 +196,7 @@ func (r *NatGatewayReconciler) reconcileNatGateway(ctx context.Context, ngw iaas
 		ngw.Status.V6IP = fetched.V6IP
 		ngw.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -198,6 +204,7 @@ func (r *NatGatewayReconciler) reconcileNatGateway(ctx context.Context, ngw iaas
 		log.Info("updating NAT gateway in Thalassa", "identity", identity)
 		SetStandardConditions(&ngw.Status.Conditions, ConditionStateProgressing, "Updating", "Updating NAT gateway in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
@@ -208,50 +215,56 @@ func (r *NatGatewayReconciler) reconcileNatGateway(ctx context.Context, ngw iaas
 			SecurityGroupAttachments: sgIdentities,
 		})
 		if err != nil {
-			return r.setNatGatewayErrorCondition(ctx, &ngw, "UpdateFailed", err.Error(), err)
+			return r.setNatGatewayErrorCondition(ctx, &ngw, "reconcileNatGateway", "UpdateFailed", err.Error(), err)
 		}
 		ngw.Status.ResourceStatus = updated.Status
 		ngw.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		fetched, err = r.IaaSClient.GetNatGateway(ctx, identity)
 		if err != nil {
-			return r.setNatGatewayErrorCondition(ctx, &ngw, "GetFailed", "Failed to get NAT gateway after update", err)
+			return r.setNatGatewayErrorCondition(ctx, &ngw, "reconcileNatGateway", "GetFailed", "Failed to get NAT gateway after update", err)
 		}
 		ngw.Status.ResourceStatus = fetched.Status
 		ngw.Status.EndpointIP = fetched.EndpointIP
 		ngw.Status.V4IP = fetched.V4IP
 		ngw.Status.V6IP = fetched.V6IP
 		if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
 
 	SetStandardConditions(&ngw.Status.Conditions, ConditionStateAvailable, "Synced", "NAT gateway is synced with Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &ngw); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *NatGatewayReconciler) reconcileDelete(ctx context.Context, ngw *iaasv1.NatGateway) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	if !controllerutil.ContainsFinalizer(ngw, natGatewayFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	identity := ngw.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteNatGateway(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete NAT gateway in Thalassa")
 			return ctrl.Result{}, err
 		}
 		if err := r.IaaSClient.WaitUntilNatGatewayDeleted(ctx, identity); err != nil {
+			log.Error(err, "failed waiting for NAT gateway deletion")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted NAT gateway in Thalassa", "identity", identity)
 	}
 	if controllerutil.RemoveFinalizer(ngw, natGatewayFinalizer) {
 		if err := r.Update(ctx, ngw); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -269,10 +282,13 @@ func (r *NatGatewayReconciler) updateStatusWithRetry(ctx context.Context, ngw *i
 	})
 }
 
-func (r *NatGatewayReconciler) setNatGatewayErrorCondition(ctx context.Context, ngw *iaasv1.NatGateway, reason, message string, err error) (ctrl.Result, error) {
+func (r *NatGatewayReconciler) setNatGatewayErrorCondition(ctx context.Context, ngw *iaasv1.NatGateway, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&ngw.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		ngw.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, ngw); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

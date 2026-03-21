@@ -58,7 +58,7 @@ type SubnetReconciler struct {
 
 // Reconcile moves the current state of a Subnet toward the desired spec by creating or updating the resource in Thalassa IaaS.
 func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var subnet iaasv1.Subnet
 	if err := r.Get(ctx, req.NamespacedName, &subnet); err != nil {
@@ -86,10 +86,11 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// Require VPCRef and CIDR when not using ResourceID
 	if subnet.Spec.VPCRef.Name == "" || subnet.Spec.CIDR == "" {
 		err := errors.New("spec.vpcRef.name and spec.cidr are required when spec.resourceId is not set")
-		return r.setSubnetErrorCondition(ctx, &subnet, "InvalidSpec", err.Error(), err)
+		return r.setSubnetErrorCondition(ctx, &subnet, "Reconcile", "InvalidSpec", err.Error(), err)
 	}
 	if controllerutil.AddFinalizer(&subnet, subnetFinalizer) {
 		if err := r.Update(ctx, &subnet); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -100,7 +101,7 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setSubnetErrorCondition(ctx, &subnet, "VPCNotFound", err.Error(), err)
+		return r.setSubnetErrorCondition(ctx, &subnet, "Reconcile", "VPCNotFound", err.Error(), err)
 	}
 	return r.reconcileSubnet(ctx, subnet, vpcIdentity)
 }
@@ -121,13 +122,14 @@ func (r *SubnetReconciler) createSubnet(ctx context.Context, subnet iaasv1.Subne
 		Cidr:        subnet.Spec.CIDR,
 	})
 	if err != nil {
-		return r.setSubnetErrorCondition(ctx, &subnet, "FailedCreate", err.Error(), err)
+		return r.setSubnetErrorCondition(ctx, &subnet, "createSubnet", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	subnet.Status.ResourceID = identity
 	subnet.Status.ResourceStatus = string(created.Status)
 	subnet.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	if _, err := r.IaaSClient.WaitUntilSubnetReady(ctx, identity); err != nil {
@@ -157,11 +159,12 @@ func (r *SubnetReconciler) reconcileSubnet(ctx context.Context, subnet iaasv1.Su
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&subnet.Status.Conditions, ConditionStateDegraded, "NotFound", "Subnet not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setSubnetErrorCondition(ctx, &subnet, "NotFound", "Subnet not found in Thalassa", err)
+			return r.setSubnetErrorCondition(ctx, &subnet, "reconcileSubnet", "NotFound", "Subnet not found in Thalassa", err)
 		}
-		return r.setSubnetErrorCondition(ctx, &subnet, "GetFailed", "Failed to get subnet from Thalassa", err)
+		return r.setSubnetErrorCondition(ctx, &subnet, "reconcileSubnet", "GetFailed", "Failed to get subnet from Thalassa", err)
 	}
 
 	// Sync status
@@ -169,6 +172,7 @@ func (r *SubnetReconciler) reconcileSubnet(ctx context.Context, subnet iaasv1.Su
 		subnet.Status.ResourceStatus = string(fetched.Status)
 		subnet.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -176,6 +180,7 @@ func (r *SubnetReconciler) reconcileSubnet(ctx context.Context, subnet iaasv1.Su
 		log.Info("updating subnet in Thalassa", "identity", identity)
 		SetStandardConditions(&subnet.Status.Conditions, ConditionStateProgressing, "Updating", "Updating subnet in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
@@ -185,26 +190,29 @@ func (r *SubnetReconciler) reconcileSubnet(ctx context.Context, subnet iaasv1.Su
 			Labels:      effectiveLabels(subnet.Spec.Metadata),
 		})
 		if err != nil {
-			return r.setSubnetErrorCondition(ctx, &subnet, "UpdateFailed", err.Error(), err)
+			return r.setSubnetErrorCondition(ctx, &subnet, "reconcileSubnet", "UpdateFailed", err.Error(), err)
 		}
 		subnet.Status.ResourceStatus = string(updated.Status)
 		subnet.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
 		fetched, err = r.IaaSClient.GetSubnet(ctx, identity)
 		if err != nil {
-			return r.setSubnetErrorCondition(ctx, &subnet, "GetFailed", "Failed to get subnet after update", err)
+			return r.setSubnetErrorCondition(ctx, &subnet, "reconcileSubnet", "GetFailed", "Failed to get subnet after update", err)
 		}
 		subnet.Status.ResourceStatus = string(fetched.Status)
 		if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
 
 	SetStandardConditions(&subnet.Status.Conditions, ConditionStateAvailable, "Synced", "Subnet is synced with Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
@@ -212,8 +220,10 @@ func (r *SubnetReconciler) reconcileSubnet(ctx context.Context, subnet iaasv1.Su
 
 // reconcileSubnetExternalReference adopts an already-provisioned subnet by spec.ResourceID. No create/update/delete in Thalassa.
 func (r *SubnetReconciler) reconcileSubnetExternalReference(ctx context.Context, subnet *iaasv1.Subnet) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", "reconcileSubnetExternalReference")
 	fetched, err := r.IaaSClient.GetSubnet(ctx, subnet.Spec.ResourceID)
 	if err != nil {
+		log.Error(err, "failed to get subnet from Thalassa")
 		return ctrl.Result{}, err
 	}
 	subnet.Status.ResourceID = subnet.Spec.ResourceID
@@ -221,11 +231,13 @@ func (r *SubnetReconciler) reconcileSubnetExternalReference(ctx context.Context,
 	if subnet.Status.ResourceStatus != string(fetched.Status) {
 		subnet.Status.ResourceStatus = string(fetched.Status)
 		if updateErr := r.updateStatusWithRetry(ctx, subnet); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
 	if meta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Synced", Message: ""}) {
 		if updateErr := r.updateStatusWithRetry(ctx, subnet); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -240,15 +252,18 @@ func (r *SubnetReconciler) reconcileDelete(ctx context.Context, subnet *iaasv1.S
 	identity := subnet.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteSubnet(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete subnet in Thalassa")
 			return ctrl.Result{}, err
 		}
 		if err := r.IaaSClient.WaitUntilSubnetDeleted(ctx, identity); err != nil {
+			log.Error(err, "failed waiting for subnet deletion")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted subnet in Thalassa", "identity", identity)
 	}
 	if controllerutil.RemoveFinalizer(subnet, subnetFinalizer) {
 		if err := r.Update(ctx, subnet); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -267,10 +282,13 @@ func (r *SubnetReconciler) updateStatusWithRetry(ctx context.Context, subnet *ia
 	})
 }
 
-func (r *SubnetReconciler) setSubnetErrorCondition(ctx context.Context, subnet *iaasv1.Subnet, reason, message string, err error) (ctrl.Result, error) {
+func (r *SubnetReconciler) setSubnetErrorCondition(ctx context.Context, subnet *iaasv1.Subnet, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&subnet.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		subnet.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, subnet); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

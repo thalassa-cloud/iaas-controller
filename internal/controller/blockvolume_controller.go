@@ -57,7 +57,7 @@ type BlockVolumeReconciler struct {
 
 // Reconcile moves the current state of a BlockVolume toward the desired spec by creating or updating the volume in Thalassa IaaS.
 func (r *BlockVolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var bv iaasv1.BlockVolume
 	if err := r.Get(ctx, req.NamespacedName, &bv); err != nil {
@@ -78,6 +78,7 @@ func (r *BlockVolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if controllerutil.AddFinalizer(&bv, blockvolumeFinalizer) {
 		if err := r.Update(ctx, &bv); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -87,10 +88,11 @@ func (r *BlockVolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 func (r *BlockVolumeReconciler) createBlockVolume(ctx context.Context, bv iaasv1.BlockVolume) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createBlockVolume")
 
 	SetStandardConditions(&bv.Status.Conditions, ConditionStateProgressing, "Creating", "Creating block volume in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &bv); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -103,7 +105,7 @@ func (r *BlockVolumeReconciler) createBlockVolume(ctx context.Context, bv iaasv1
 	// search for volume type in Thalassa
 	volumeTypes, err := r.IaaSClient.ListVolumeTypes(ctx, &thalassaiaas.ListVolumeTypesRequest{})
 	if err != nil {
-		return r.setBlockVolumeErrorCondition(ctx, &bv, "FailedListVolumeTypes", err.Error(), err)
+		return r.setBlockVolumeErrorCondition(ctx, &bv, "createBlockVolume", "FailedListVolumeTypes", err.Error(), err)
 	}
 	for _, vt := range volumeTypes {
 		if vt.Identity == volumeTypeId || strings.EqualFold(vt.Name, volumeTypeId) {
@@ -112,7 +114,7 @@ func (r *BlockVolumeReconciler) createBlockVolume(ctx context.Context, bv iaasv1
 		}
 	}
 	if volumeTypeId == "" {
-		return r.setBlockVolumeErrorCondition(ctx, &bv, "FailedFindVolumeType", "Volume type not found in Thalassa", fmt.Errorf("volume type %s not found in Thalassa", volumeTypeId))
+		return r.setBlockVolumeErrorCondition(ctx, &bv, "createBlockVolume", "FailedFindVolumeType", "Volume type not found in Thalassa", fmt.Errorf("volume type %s not found in Thalassa", volumeTypeId))
 	}
 
 	createReq := thalassaiaas.CreateVolume{
@@ -128,13 +130,14 @@ func (r *BlockVolumeReconciler) createBlockVolume(ctx context.Context, bv iaasv1
 	}
 	created, err := r.IaaSClient.CreateVolume(ctx, createReq)
 	if err != nil {
-		return r.setBlockVolumeErrorCondition(ctx, &bv, "FailedCreate", err.Error(), err)
+		return r.setBlockVolumeErrorCondition(ctx, &bv, "createBlockVolume", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	bv.Status.ResourceID = identity
 	bv.Status.ResourceStatus = created.Status
 	bv.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &bv); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	if err := r.IaaSClient.WaitUntilVolumeIsAvailable(ctx, identity); err != nil {
@@ -145,18 +148,20 @@ func (r *BlockVolumeReconciler) createBlockVolume(ctx context.Context, bv iaasv1
 
 	fetched, err := r.IaaSClient.GetVolume(ctx, identity)
 	if err != nil {
-		return r.setBlockVolumeErrorCondition(ctx, &bv, "GetFailed", "Failed to get volume after create", err)
+		return r.setBlockVolumeErrorCondition(ctx, &bv, "createBlockVolume", "GetFailed", "Failed to get volume after create", err)
 	}
 	bv.Status.ResourceStatus = fetched.Status
 	SetStandardConditions(&bv.Status.Conditions, ConditionStateAvailable, "Created", "Block volume is created in Thalassa")
 	bv.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &bv); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *BlockVolumeReconciler) reconcileBlockVolume(ctx context.Context, bv iaasv1.BlockVolume) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", "reconcileBlockVolume")
 	identity := bv.Status.ResourceID
 	if identity == "" {
 		return r.createBlockVolume(ctx, bv)
@@ -167,17 +172,19 @@ func (r *BlockVolumeReconciler) reconcileBlockVolume(ctx context.Context, bv iaa
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&bv.Status.Conditions, ConditionStateDegraded, "NotFound", "Volume not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &bv); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setBlockVolumeErrorCondition(ctx, &bv, "NotFound", "Volume not found in Thalassa", err)
+			return r.setBlockVolumeErrorCondition(ctx, &bv, "reconcileBlockVolume", "NotFound", "Volume not found in Thalassa", err)
 		}
-		return r.setBlockVolumeErrorCondition(ctx, &bv, "GetFailed", "Failed to get volume from Thalassa", err)
+		return r.setBlockVolumeErrorCondition(ctx, &bv, "reconcileBlockVolume", "GetFailed", "Failed to get volume from Thalassa", err)
 	}
 
 	bv.Status.ResourceStatus = fetched.Status
 	if r.requiresUpdate(&bv, fetched) {
 		SetStandardConditions(&bv.Status.Conditions, ConditionStateProgressing, "Updating", "Updating block volume in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &bv); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		_, err = r.IaaSClient.UpdateVolume(ctx, identity, thalassaiaas.UpdateVolume{
@@ -188,26 +195,30 @@ func (r *BlockVolumeReconciler) reconcileBlockVolume(ctx context.Context, bv iaa
 			DeleteProtection: bv.Spec.DeleteProtection,
 		})
 		if err != nil {
-			return r.setBlockVolumeErrorCondition(ctx, &bv, "FailedUpdate", err.Error(), err)
+			return r.setBlockVolumeErrorCondition(ctx, &bv, "reconcileBlockVolume", "FailedUpdate", err.Error(), err)
 		}
 		fetched, err = r.IaaSClient.GetVolume(ctx, identity)
 		if err != nil {
-			return r.setBlockVolumeErrorCondition(ctx, &bv, "GetFailed", "Failed to get volume after update", err)
+			return r.setBlockVolumeErrorCondition(ctx, &bv, "reconcileBlockVolume", "GetFailed", "Failed to get volume after update", err)
 		}
 		bv.Status.ResourceStatus = fetched.Status
 	}
 
 	SetStandardConditions(&bv.Status.Conditions, ConditionStateAvailable, "Reconciled", "Block volume is up to date")
 	bv.Status.LastReconcileError = ""
-	return ctrl.Result{}, r.updateStatusWithRetry(ctx, &bv)
+	if updateErr := r.updateStatusWithRetry(ctx, &bv); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
+		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *BlockVolumeReconciler) reconcileDelete(ctx context.Context, bv *iaasv1.BlockVolume) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	identity := bv.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteVolume(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
-			return r.setBlockVolumeErrorCondition(ctx, bv, "DeleteFailed", err.Error(), err)
+			return r.setBlockVolumeErrorCondition(ctx, bv, "reconcileDelete", "DeleteFailed", err.Error(), err)
 		}
 		if err := r.IaaSClient.WaitUntilVolumeIsDeleted(ctx, identity); err != nil {
 			log.Error(err, "failed to wait until volume is deleted, will retry")
@@ -216,6 +227,7 @@ func (r *BlockVolumeReconciler) reconcileDelete(ctx context.Context, bv *iaasv1.
 	}
 	if controllerutil.RemoveFinalizer(bv, blockvolumeFinalizer) {
 		if err := r.Update(ctx, bv); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -233,10 +245,13 @@ func (r *BlockVolumeReconciler) updateStatusWithRetry(ctx context.Context, bv *i
 	})
 }
 
-func (r *BlockVolumeReconciler) setBlockVolumeErrorCondition(ctx context.Context, bv *iaasv1.BlockVolume, reason, message string, err error) (ctrl.Result, error) {
+func (r *BlockVolumeReconciler) setBlockVolumeErrorCondition(ctx context.Context, bv *iaasv1.BlockVolume, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&bv.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		bv.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, bv); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

@@ -58,7 +58,7 @@ type TargetGroupReconciler struct {
 
 // Reconcile moves the current state of a TargetGroup toward the desired spec, including attachments.
 func (r *TargetGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var tg iaasv1.TargetGroup
 	if err := r.Get(ctx, req.NamespacedName, &tg); err != nil {
@@ -79,6 +79,7 @@ func (r *TargetGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if controllerutil.AddFinalizer(&tg, targetGroupFinalizer) {
 		if err := r.Update(ctx, &tg); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -89,41 +90,44 @@ func (r *TargetGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setTargetGroupErrorCondition(ctx, &tg, "VPCNotFound", err.Error(), err)
+		return r.setTargetGroupErrorCondition(ctx, &tg, "Reconcile", "VPCNotFound", err.Error(), err)
 	}
 	return r.reconcileTargetGroup(ctx, tg, vpcIdentity)
 }
 
 func (r *TargetGroupReconciler) createTargetGroup(ctx context.Context, tg iaasv1.TargetGroup, vpcIdentity string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createTargetGroup")
 	createReq := r.specToCreateTargetGroup(&tg, vpcIdentity)
 
 	SetStandardConditions(&tg.Status.Conditions, ConditionStateProgressing, "Creating", "Creating target group in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &tg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
 	created, err := r.IaaSClient.CreateTargetGroup(ctx, createReq)
 	if err != nil {
-		return r.setTargetGroupErrorCondition(ctx, &tg, "FailedCreate", err.Error(), errors.New(strings.ReplaceAll(err.Error(), "\n", " ")))
+		return r.setTargetGroupErrorCondition(ctx, &tg, "createTargetGroup", "FailedCreate", err.Error(), errors.New(strings.ReplaceAll(err.Error(), "\n", " ")))
 	}
 	tg.Status.ResourceID = created.Identity
 	tg.Status.ResourceStatus = ResourceStatusReady
 	tg.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &tg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	log.Info("created target group in Thalassa", "identity", created.Identity)
 
 	SetStandardConditions(&tg.Status.Conditions, ConditionStateAvailable, "Created", "Target group is created in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &tg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 }
 
 func (r *TargetGroupReconciler) reconcileTargetGroup(ctx context.Context, tg iaasv1.TargetGroup, vpcIdentity string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileTargetGroup")
 	identity := tg.Status.ResourceID
 	if identity == "" {
 		return r.createTargetGroup(ctx, tg, vpcIdentity)
@@ -135,18 +139,19 @@ func (r *TargetGroupReconciler) reconcileTargetGroup(ctx context.Context, tg iaa
 			tg.Status.ResourceID = ""
 			tg.Status.ResourceStatus = ""
 			if updateErr := r.updateStatusWithRetry(ctx, &tg); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
 			return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 		}
-		return r.setTargetGroupErrorCondition(ctx, &tg, "GetFailed", "Failed to get target group from Thalassa", err)
+		return r.setTargetGroupErrorCondition(ctx, &tg, "reconcileTargetGroup", "GetFailed", "Failed to get target group from Thalassa", err)
 	}
 
 	updateReq := r.specToUpdateTargetGroup(&tg)
 	updateReq.Identity = identity
 	_, err = r.IaaSClient.UpdateTargetGroup(ctx, updateReq)
 	if err != nil {
-		return r.setTargetGroupErrorCondition(ctx, &tg, "UpdateFailed", err.Error(), err)
+		return r.setTargetGroupErrorCondition(ctx, &tg, "reconcileTargetGroup", "UpdateFailed", err.Error(), err)
 	}
 
 	attachments := make([]thalassaiaas.AttachTarget, 0, len(tg.Spec.Attachments))
@@ -170,6 +175,7 @@ func (r *TargetGroupReconciler) reconcileTargetGroup(ctx context.Context, tg iaa
 	tg.Status.LastReconcileError = ""
 	tg.Status.ResourceStatus = ResourceStatusReady
 	if updateErr := r.updateStatusWithRetry(ctx, &tg); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
@@ -251,13 +257,14 @@ func (r *TargetGroupReconciler) specToUpdateTargetGroup(tg *iaasv1.TargetGroup) 
 }
 
 func (r *TargetGroupReconciler) reconcileDelete(ctx context.Context, tg *iaasv1.TargetGroup) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	if !controllerutil.ContainsFinalizer(tg, targetGroupFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	identity := tg.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteTargetGroup(ctx, thalassaiaas.DeleteTargetGroupRequest{Identity: identity}); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete target group in Thalassa")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted target group in Thalassa", "identity", identity)
@@ -281,10 +288,13 @@ func (r *TargetGroupReconciler) updateStatusWithRetry(ctx context.Context, tg *i
 	})
 }
 
-func (r *TargetGroupReconciler) setTargetGroupErrorCondition(ctx context.Context, tg *iaasv1.TargetGroup, reason, message string, err error) (ctrl.Result, error) {
+func (r *TargetGroupReconciler) setTargetGroupErrorCondition(ctx context.Context, tg *iaasv1.TargetGroup, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&tg.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		tg.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, tg); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

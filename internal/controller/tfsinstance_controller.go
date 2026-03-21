@@ -62,7 +62,7 @@ type TfsInstanceReconciler struct {
 
 // Reconcile moves the current state of a TfsInstance toward the desired spec by creating or updating the TFS instance in Thalassa.
 func (r *TfsInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var tfsInst iaasv1.TfsInstance
 	if err := r.Get(ctx, req.NamespacedName, &tfsInst); err != nil {
@@ -83,6 +83,7 @@ func (r *TfsInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if controllerutil.AddFinalizer(&tfsInst, tfsinstanceFinalizer) {
 		if err := r.Update(ctx, &tfsInst); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -93,34 +94,35 @@ func (r *TfsInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "VPCNotFound", err.Error(), err)
+		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "Reconcile", "VPCNotFound", err.Error(), err)
 	}
 	subnetIdentity, err := r.resolveSubnetRef(ctx, tfsInst.Namespace, tfsInst.Spec.SubnetRef)
 	if err != nil {
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "SubnetNotFound", err.Error(), err)
+		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "Reconcile", "SubnetNotFound", err.Error(), err)
 	}
 	sgIdentities, err := r.resolveSecurityGroupRefs(ctx, tfsInst.Namespace, tfsInst.Spec.SecurityGroupRefs)
 	if err != nil {
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "SecurityGroupNotFound", err.Error(), err)
+		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "Reconcile", "SecurityGroupNotFound", err.Error(), err)
 	}
 	cloudRegionIdentity, err := r.getCloudRegionIdentity(ctx, &tfsInst, vpcIdentity)
 	if err != nil {
-		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "RegionNotFound", err.Error(), err)
+		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "Reconcile", "RegionNotFound", err.Error(), err)
 	}
 	return r.reconcileTfsInstance(ctx, tfsInst, cloudRegionIdentity, vpcIdentity, subnetIdentity, sgIdentities)
 }
 
 func (r *TfsInstanceReconciler) createTfsInstance(ctx context.Context, tfsInst iaasv1.TfsInstance, cloudRegionIdentity, vpcIdentity, subnetIdentity string, sgIdentities []string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createTfsInstance")
 
 	SetStandardConditions(&tfsInst.Status.Conditions, ConditionStateProgressing, "Creating", "Creating TFS instance in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &tfsInst); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -138,13 +140,14 @@ func (r *TfsInstanceReconciler) createTfsInstance(ctx context.Context, tfsInst i
 	created, err := r.TFSClient.CreateTfsInstance(ctx, createReq)
 	if err != nil {
 		err := fmt.Errorf("failed to create TFS instance: %w", err)
-		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "FailedCreate", err.Error(), err)
+		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "createTfsInstance", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	tfsInst.Status.ResourceID = identity
 	tfsInst.Status.ResourceStatus = string(created.Status)
 	tfsInst.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &tfsInst); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	if err := r.TFSClient.WaitUntilTfsInstanceIsAvailable(ctx, identity); err != nil {
@@ -155,18 +158,20 @@ func (r *TfsInstanceReconciler) createTfsInstance(ctx context.Context, tfsInst i
 
 	fetched, err := r.TFSClient.GetTfsInstance(ctx, identity)
 	if err != nil {
-		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "GetFailed", "Failed to get TFS instance after create", err)
+		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "createTfsInstance", "GetFailed", "Failed to get TFS instance after create", err)
 	}
 	tfsInst.Status.ResourceStatus = string(fetched.Status)
 	SetStandardConditions(&tfsInst.Status.Conditions, ConditionStateAvailable, "Created", "TFS instance is created in Thalassa")
 	tfsInst.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &tfsInst); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *TfsInstanceReconciler) reconcileTfsInstance(ctx context.Context, tfsInst iaasv1.TfsInstance, cloudRegionIdentity, vpcIdentity, subnetIdentity string, sgIdentities []string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", "reconcileTfsInstance")
 	identity := tfsInst.Status.ResourceID
 	if identity == "" {
 		return r.createTfsInstance(ctx, tfsInst, cloudRegionIdentity, vpcIdentity, subnetIdentity, sgIdentities)
@@ -177,17 +182,19 @@ func (r *TfsInstanceReconciler) reconcileTfsInstance(ctx context.Context, tfsIns
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&tfsInst.Status.Conditions, ConditionStateDegraded, "NotFound", "TFS instance not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &tfsInst); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "NotFound", "TFS instance not found in Thalassa", err)
+			return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "reconcileTfsInstance", "NotFound", "TFS instance not found in Thalassa", err)
 		}
-		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "GetFailed", "Failed to get TFS instance from Thalassa", err)
+		return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "reconcileTfsInstance", "GetFailed", "Failed to get TFS instance from Thalassa", err)
 	}
 
 	tfsInst.Status.ResourceStatus = string(fetched.Status)
 	if r.requiresUpdate(&tfsInst, fetched, sgIdentities) {
 		SetStandardConditions(&tfsInst.Status.Conditions, ConditionStateProgressing, "Updating", "Updating TFS instance in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &tfsInst); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		_, err = r.TFSClient.UpdateTfsInstance(ctx, identity, tfs.UpdateTfsInstanceRequest{
@@ -199,26 +206,30 @@ func (r *TfsInstanceReconciler) reconcileTfsInstance(ctx context.Context, tfsIns
 			DeleteProtection:         tfsInst.Spec.DeleteProtection,
 		})
 		if err != nil {
-			return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "FailedUpdate", err.Error(), err)
+			return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "reconcileTfsInstance", "FailedUpdate", err.Error(), err)
 		}
 		fetched, err = r.TFSClient.GetTfsInstance(ctx, identity)
 		if err != nil {
-			return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "GetFailed", "Failed to get TFS instance after update", err)
+			return r.setTfsInstanceErrorCondition(ctx, &tfsInst, "reconcileTfsInstance", "GetFailed", "Failed to get TFS instance after update", err)
 		}
 		tfsInst.Status.ResourceStatus = string(fetched.Status)
 	}
 
 	SetStandardConditions(&tfsInst.Status.Conditions, ConditionStateAvailable, "Reconciled", "TFS instance is up to date")
 	tfsInst.Status.LastReconcileError = ""
-	return ctrl.Result{}, r.updateStatusWithRetry(ctx, &tfsInst)
+	if updateErr := r.updateStatusWithRetry(ctx, &tfsInst); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
+		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *TfsInstanceReconciler) reconcileDelete(ctx context.Context, tfsInst *iaasv1.TfsInstance) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	identity := tfsInst.Status.ResourceID
 	if identity != "" {
 		if err := r.TFSClient.DeleteTfsInstance(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
-			return r.setTfsInstanceErrorCondition(ctx, tfsInst, "DeleteFailed", err.Error(), err)
+			return r.setTfsInstanceErrorCondition(ctx, tfsInst, "reconcileDelete", "DeleteFailed", err.Error(), err)
 		}
 		if err := r.TFSClient.WaitUntilTfsInstanceIsDeleted(ctx, identity); err != nil {
 			log.Error(err, "failed to wait until TFS instance is deleted, will retry")
@@ -227,6 +238,7 @@ func (r *TfsInstanceReconciler) reconcileDelete(ctx context.Context, tfsInst *ia
 	}
 	if controllerutil.RemoveFinalizer(tfsInst, tfsinstanceFinalizer) {
 		if err := r.Update(ctx, tfsInst); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -244,10 +256,13 @@ func (r *TfsInstanceReconciler) updateStatusWithRetry(ctx context.Context, tfsIn
 	})
 }
 
-func (r *TfsInstanceReconciler) setTfsInstanceErrorCondition(ctx context.Context, tfsInst *iaasv1.TfsInstance, reason, message string, err error) (ctrl.Result, error) {
+func (r *TfsInstanceReconciler) setTfsInstanceErrorCondition(ctx context.Context, tfsInst *iaasv1.TfsInstance, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&tfsInst.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		tfsInst.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, tfsInst); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

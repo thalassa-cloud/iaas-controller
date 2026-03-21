@@ -59,7 +59,7 @@ type RouteTableRouteReconciler struct {
 
 // Reconcile moves the current state of a RouteTableRoute toward the desired spec.
 func (r *RouteTableRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var route iaasv1.RouteTableRoute
 	if err := r.Get(ctx, req.NamespacedName, &route); err != nil {
@@ -80,6 +80,7 @@ func (r *RouteTableRouteReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	if controllerutil.AddFinalizer(&route, routeTableRouteFinalizer) {
 		if err := r.Update(ctx, &route); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -90,7 +91,7 @@ func (r *RouteTableRouteReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setRouteTableRouteErrorCondition(ctx, &route, "RouteTableNotFound", err.Error(), err)
+		return r.setRouteTableRouteErrorCondition(ctx, &route, "Reconcile", "RouteTableNotFound", err.Error(), err)
 	}
 	var targetNatGatewayId, targetGatewayId string
 	var targetVpcPeeringConnectionId *string
@@ -101,7 +102,7 @@ func (r *RouteTableRouteReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			if errors.Is(err, ErrDependencyNotReady) {
 				return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 			}
-			return r.setRouteTableRouteErrorCondition(ctx, &route, "TargetGatewayNotFound", err.Error(), err)
+			return r.setRouteTableRouteErrorCondition(ctx, &route, "Reconcile", "TargetGatewayNotFound", err.Error(), err)
 		}
 		targetVpcPeeringConnectionId = resolvedVpcPeeringId
 	} else {
@@ -113,7 +114,7 @@ func (r *RouteTableRouteReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *RouteTableRouteReconciler) createRouteTableRoute(ctx context.Context, route iaasv1.RouteTableRoute, rtIdentity, targetNatGatewayId, targetGatewayId string, targetVpcPeeringConnectionId *string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createRouteTableRoute")
 	createReq := thalassaiaas.CreateRouteTableRoute{
 		DestinationCidrBlock:         route.Spec.DestinationCidrBlock,
 		TargetNatGatewayIdentity:     targetNatGatewayId,
@@ -124,30 +125,33 @@ func (r *RouteTableRouteReconciler) createRouteTableRoute(ctx context.Context, r
 
 	SetStandardConditions(&route.Status.Conditions, ConditionStateProgressing, "Creating", "Creating route table route in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &route); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
 	created, err := r.IaaSClient.CreateRouteTableRoute(ctx, rtIdentity, createReq)
 	if err != nil {
-		return r.setRouteTableRouteErrorCondition(ctx, &route, "FailedCreate", err.Error(), err)
+		return r.setRouteTableRouteErrorCondition(ctx, &route, "createRouteTableRoute", "FailedCreate", err.Error(), err)
 	}
 	route.Status.ResourceID = created.Identity
 	route.Status.ResourceStatus = ResourceStatusReady
 	route.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &route); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	log.Info("created route table route in Thalassa", "identity", created.Identity)
 
 	SetStandardConditions(&route.Status.Conditions, ConditionStateAvailable, "Created", "Route table route is created in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &route); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *RouteTableRouteReconciler) reconcileRouteTableRoute(ctx context.Context, route iaasv1.RouteTableRoute, rtIdentity, targetNatGatewayId, targetGatewayId string, targetVpcPeeringConnectionId *string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileRouteTableRoute")
 	routeIdentity := route.Status.ResourceID
 	if routeIdentity == "" {
 		return r.createRouteTableRoute(ctx, route, rtIdentity, targetNatGatewayId, targetGatewayId, targetVpcPeeringConnectionId)
@@ -166,17 +170,19 @@ func (r *RouteTableRouteReconciler) reconcileRouteTableRoute(ctx context.Context
 			route.Status.ResourceID = ""
 			route.Status.ResourceStatus = ""
 			if updateErr := r.updateStatusWithRetry(ctx, &route); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
 			return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 		}
-		return r.setRouteTableRouteErrorCondition(ctx, &route, "UpdateFailed", err.Error(), err)
+		return r.setRouteTableRouteErrorCondition(ctx, &route, "reconcileRouteTableRoute", "UpdateFailed", err.Error(), err)
 	}
 
 	SetStandardConditions(&route.Status.Conditions, ConditionStateAvailable, "Synced", "Route table route is synced with Thalassa")
 	route.Status.LastReconcileError = ""
 	route.Status.ResourceStatus = ResourceStatusReady
 	if updateErr := r.updateStatusWithRetry(ctx, &route); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	log.Info("synced route table route in Thalassa", "identity", routeIdentity)
@@ -184,7 +190,7 @@ func (r *RouteTableRouteReconciler) reconcileRouteTableRoute(ctx context.Context
 }
 
 func (r *RouteTableRouteReconciler) reconcileDelete(ctx context.Context, route *iaasv1.RouteTableRoute) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	if !controllerutil.ContainsFinalizer(route, routeTableRouteFinalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -198,12 +204,14 @@ func (r *RouteTableRouteReconciler) reconcileDelete(ctx context.Context, route *
 	routeIdentity := route.Status.ResourceID
 	if routeIdentity != "" {
 		if err := r.IaaSClient.DeleteRouteTableRoute(ctx, rtIdentity, routeIdentity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete route table route in Thalassa")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted route table route in Thalassa", "identity", routeIdentity)
 	}
 	if controllerutil.RemoveFinalizer(route, routeTableRouteFinalizer) {
 		if err := r.Update(ctx, route); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -221,10 +229,13 @@ func (r *RouteTableRouteReconciler) updateStatusWithRetry(ctx context.Context, r
 	})
 }
 
-func (r *RouteTableRouteReconciler) setRouteTableRouteErrorCondition(ctx context.Context, route *iaasv1.RouteTableRoute, reason, message string, err error) (ctrl.Result, error) {
+func (r *RouteTableRouteReconciler) setRouteTableRouteErrorCondition(ctx context.Context, route *iaasv1.RouteTableRoute, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&route.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		route.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, route); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

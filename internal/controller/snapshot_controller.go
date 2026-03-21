@@ -58,7 +58,7 @@ type SnapshotReconciler struct {
 
 // Reconcile moves the current state of a Snapshot toward the desired spec by creating or updating the snapshot in Thalassa IaaS.
 func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var snap iaasv1.Snapshot
 	if err := r.Get(ctx, req.NamespacedName, &snap); err != nil {
@@ -79,6 +79,7 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	if controllerutil.AddFinalizer(&snap, snapshotFinalizer) {
 		if err := r.Update(ctx, &snap); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -89,16 +90,17 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setSnapshotErrorCondition(ctx, &snap, "VolumeNotFound", err.Error(), err)
+		return r.setSnapshotErrorCondition(ctx, &snap, "Reconcile", "VolumeNotFound", err.Error(), err)
 	}
 	return r.reconcileSnapshot(ctx, snap, volumeIdentity)
 }
 
 func (r *SnapshotReconciler) createSnapshot(ctx context.Context, snap iaasv1.Snapshot, volumeIdentity string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createSnapshot")
 
 	SetStandardConditions(&snap.Status.Conditions, ConditionStateProgressing, "Creating", "Creating snapshot in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &snap); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -111,13 +113,14 @@ func (r *SnapshotReconciler) createSnapshot(ctx context.Context, snap iaasv1.Sna
 	}
 	created, err := r.IaaSClient.CreateSnapshot(ctx, createReq)
 	if err != nil {
-		return r.setSnapshotErrorCondition(ctx, &snap, "FailedCreate", err.Error(), err)
+		return r.setSnapshotErrorCondition(ctx, &snap, "createSnapshot", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	snap.Status.ResourceID = identity
 	snap.Status.ResourceStatus = string(created.Status)
 	snap.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &snap); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	if err := r.IaaSClient.WaitUntilSnapshotIsAvailable(ctx, identity); err != nil {
@@ -128,18 +131,20 @@ func (r *SnapshotReconciler) createSnapshot(ctx context.Context, snap iaasv1.Sna
 
 	fetched, err := r.IaaSClient.GetSnapshot(ctx, identity)
 	if err != nil {
-		return r.setSnapshotErrorCondition(ctx, &snap, "GetFailed", "Failed to get snapshot after create", err)
+		return r.setSnapshotErrorCondition(ctx, &snap, "createSnapshot", "GetFailed", "Failed to get snapshot after create", err)
 	}
 	snap.Status.ResourceStatus = string(fetched.Status)
 	SetStandardConditions(&snap.Status.Conditions, ConditionStateAvailable, "Created", "Snapshot is created in Thalassa")
 	snap.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &snap); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *SnapshotReconciler) reconcileSnapshot(ctx context.Context, snap iaasv1.Snapshot, volumeIdentity string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", "reconcileSnapshot")
 	identity := snap.Status.ResourceID
 	if identity == "" {
 		return r.createSnapshot(ctx, snap, volumeIdentity)
@@ -150,17 +155,19 @@ func (r *SnapshotReconciler) reconcileSnapshot(ctx context.Context, snap iaasv1.
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&snap.Status.Conditions, ConditionStateDegraded, "NotFound", "Snapshot not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &snap); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setSnapshotErrorCondition(ctx, &snap, "NotFound", "Snapshot not found in Thalassa", err)
+			return r.setSnapshotErrorCondition(ctx, &snap, "reconcileSnapshot", "NotFound", "Snapshot not found in Thalassa", err)
 		}
-		return r.setSnapshotErrorCondition(ctx, &snap, "GetFailed", "Failed to get snapshot from Thalassa", err)
+		return r.setSnapshotErrorCondition(ctx, &snap, "reconcileSnapshot", "GetFailed", "Failed to get snapshot from Thalassa", err)
 	}
 
 	snap.Status.ResourceStatus = string(fetched.Status)
 	if r.requiresUpdate(&snap, fetched) {
 		SetStandardConditions(&snap.Status.Conditions, ConditionStateProgressing, "Updating", "Updating snapshot in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &snap); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		_, err = r.IaaSClient.UpdateSnapshot(ctx, identity, thalassaiaas.UpdateSnapshotRequest{
@@ -170,26 +177,30 @@ func (r *SnapshotReconciler) reconcileSnapshot(ctx context.Context, snap iaasv1.
 			DeleteProtection: snap.Spec.DeleteProtection,
 		})
 		if err != nil {
-			return r.setSnapshotErrorCondition(ctx, &snap, "FailedUpdate", err.Error(), err)
+			return r.setSnapshotErrorCondition(ctx, &snap, "reconcileSnapshot", "FailedUpdate", err.Error(), err)
 		}
 		fetched, err = r.IaaSClient.GetSnapshot(ctx, identity)
 		if err != nil {
-			return r.setSnapshotErrorCondition(ctx, &snap, "GetFailed", "Failed to get snapshot after update", err)
+			return r.setSnapshotErrorCondition(ctx, &snap, "reconcileSnapshot", "GetFailed", "Failed to get snapshot after update", err)
 		}
 		snap.Status.ResourceStatus = string(fetched.Status)
 	}
 
 	SetStandardConditions(&snap.Status.Conditions, ConditionStateAvailable, "Reconciled", "Snapshot is up to date")
 	snap.Status.LastReconcileError = ""
-	return ctrl.Result{}, r.updateStatusWithRetry(ctx, &snap)
+	if updateErr := r.updateStatusWithRetry(ctx, &snap); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
+		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *SnapshotReconciler) reconcileDelete(ctx context.Context, snap *iaasv1.Snapshot) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	identity := snap.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteSnapshot(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
-			return r.setSnapshotErrorCondition(ctx, snap, "DeleteFailed", err.Error(), err)
+			return r.setSnapshotErrorCondition(ctx, snap, "reconcileDelete", "DeleteFailed", err.Error(), err)
 		}
 		if err := r.IaaSClient.WaitUntilSnapshotIsDeleted(ctx, identity); err != nil {
 			log.Error(err, "failed to wait until snapshot is deleted, will retry")
@@ -198,6 +209,7 @@ func (r *SnapshotReconciler) reconcileDelete(ctx context.Context, snap *iaasv1.S
 	}
 	if controllerutil.RemoveFinalizer(snap, snapshotFinalizer) {
 		if err := r.Update(ctx, snap); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -215,10 +227,13 @@ func (r *SnapshotReconciler) updateStatusWithRetry(ctx context.Context, snap *ia
 	})
 }
 
-func (r *SnapshotReconciler) setSnapshotErrorCondition(ctx context.Context, snap *iaasv1.Snapshot, reason, message string, err error) (ctrl.Result, error) {
+func (r *SnapshotReconciler) setSnapshotErrorCondition(ctx context.Context, snap *iaasv1.Snapshot, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&snap.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		snap.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, snap); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

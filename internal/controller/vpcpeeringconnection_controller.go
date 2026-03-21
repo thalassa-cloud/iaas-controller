@@ -58,7 +58,7 @@ type VpcPeeringConnectionReconciler struct {
 
 // Reconcile moves the current state of a VpcPeeringConnection toward the desired spec; handles accept/reject when pending.
 func (r *VpcPeeringConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var conn iaasv1.VpcPeeringConnection
 	if err := r.Get(ctx, req.NamespacedName, &conn); err != nil {
@@ -79,6 +79,7 @@ func (r *VpcPeeringConnectionReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 	if controllerutil.AddFinalizer(&conn, vpcPeeringConnectionFinalizer) {
 		if err := r.Update(ctx, &conn); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -89,12 +90,13 @@ func (r *VpcPeeringConnectionReconciler) Reconcile(ctx context.Context, req ctrl
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "RequesterVPCNotFound", err.Error(), err)
+		return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "Reconcile", "RequesterVPCNotFound", err.Error(), err)
 	}
 	return r.reconcileVpcPeeringConnection(ctx, conn, requesterVPCIdentity)
 }
 
 func (r *VpcPeeringConnectionReconciler) createVpcPeeringConnection(ctx context.Context, conn iaasv1.VpcPeeringConnection, requesterVPCIdentity string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", "createVpcPeeringConnection")
 	createReq := thalassaiaas.CreateVpcPeeringConnectionRequest{
 		Name:                         effectiveName(conn.Name, conn.Spec.Metadata),
 		Description:                  conn.Spec.Description,
@@ -106,24 +108,26 @@ func (r *VpcPeeringConnectionReconciler) createVpcPeeringConnection(ctx context.
 	}
 	created, err := r.IaaSClient.CreateVpcPeeringConnection(ctx, createReq)
 	if err != nil {
-		return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "FailedCreate", err.Error(), err)
+		return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "createVpcPeeringConnection", "FailedCreate", err.Error(), err)
 	}
 	conn.Status.ResourceID = created.Identity
 	conn.Status.Status = string(created.Status)
 	conn.Status.ResourceStatus = string(created.Status)
 	conn.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &conn); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	setReadyFromPeeringStatus(&conn.Status.Conditions, created.Status)
 	if updateErr := r.updateStatusWithRetry(ctx, &conn); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx context.Context, conn iaasv1.VpcPeeringConnection, requesterVPCIdentity string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileVpcPeeringConnection")
 	identity := conn.Status.ResourceID
 	if identity == "" {
 		return r.createVpcPeeringConnection(ctx, conn, requesterVPCIdentity)
@@ -136,11 +140,12 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 			conn.Status.Status = ""
 			conn.Status.ResourceStatus = ""
 			if updateErr := r.updateStatusWithRetry(ctx, &conn); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
 			return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 		}
-		return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "GetFailed", "Failed to get VPC peering connection from Thalassa", err)
+		return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "reconcileVpcPeeringConnection", "GetFailed", "Failed to get VPC peering connection from Thalassa", err)
 	}
 
 	if conn.Status.Status != string(existing.Status) || conn.Status.ResourceStatus != string(existing.Status) {
@@ -148,6 +153,7 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 		conn.Status.ResourceStatus = string(existing.Status)
 		conn.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &conn); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -158,7 +164,7 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 		if accept {
 			_, err = r.IaaSClient.AcceptVpcPeeringConnection(ctx, identity, thalassaiaas.AcceptVpcPeeringConnectionRequest{})
 			if err != nil {
-				return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "AcceptFailed", err.Error(), err)
+				return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "reconcileVpcPeeringConnection", "AcceptFailed", err.Error(), err)
 			}
 			log.Info("accepted VPC peering connection", "identity", identity)
 			conn.Status.LastReconcileError = ""
@@ -166,6 +172,7 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 			conn.Status.ResourceStatus = string(thalassaiaas.VpcPeeringConnectionStatusActive)
 			setReadyFromPeeringStatus(&conn.Status.Conditions, thalassaiaas.VpcPeeringConnectionStatusActive)
 			if updateErr := r.updateStatusWithRetry(ctx, &conn); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
 			return ctrl.Result{}, nil
@@ -175,7 +182,7 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 				Reason: conn.Spec.RejectReason,
 			})
 			if err != nil {
-				return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "RejectFailed", err.Error(), err)
+				return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "reconcileVpcPeeringConnection", "RejectFailed", err.Error(), err)
 			}
 			log.Info("rejected VPC peering connection", "identity", identity)
 			conn.Status.LastReconcileError = ""
@@ -183,6 +190,7 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 			conn.Status.ResourceStatus = string(thalassaiaas.VpcPeeringConnectionStatusRejected)
 			setReadyFromPeeringStatus(&conn.Status.Conditions, thalassaiaas.VpcPeeringConnectionStatusRejected)
 			if updateErr := r.updateStatusWithRetry(ctx, &conn); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
 			return ctrl.Result{}, nil
@@ -196,11 +204,11 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 			Labels:      effectiveLabels(conn.Spec.Metadata),
 		})
 		if err != nil {
-			return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "UpdateFailed", err.Error(), err)
+			return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "reconcileVpcPeeringConnection", "UpdateFailed", err.Error(), err)
 		}
 		existing, err = r.IaaSClient.GetVpcPeeringConnection(ctx, identity)
 		if err != nil {
-			return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "GetFailed", "Failed to get VPC peering connection after update", err)
+			return r.setVpcPeeringConnectionErrorCondition(ctx, &conn, "reconcileVpcPeeringConnection", "GetFailed", "Failed to get VPC peering connection after update", err)
 		}
 		conn.Status.Status = string(existing.Status)
 		conn.Status.ResourceStatus = string(existing.Status)
@@ -209,6 +217,7 @@ func (r *VpcPeeringConnectionReconciler) reconcileVpcPeeringConnection(ctx conte
 	conn.Status.LastReconcileError = ""
 	setReadyFromPeeringStatus(&conn.Status.Conditions, existing.Status)
 	if updateErr := r.updateStatusWithRetry(ctx, &conn); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
@@ -234,19 +243,21 @@ func setReadyFromPeeringStatus(conditions *[]metav1.Condition, status thalassaia
 }
 
 func (r *VpcPeeringConnectionReconciler) reconcileDelete(ctx context.Context, conn *iaasv1.VpcPeeringConnection) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	if !controllerutil.ContainsFinalizer(conn, vpcPeeringConnectionFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	identity := conn.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteVpcPeeringConnection(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete VPC peering connection in Thalassa")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted VPC peering connection in Thalassa", "identity", identity)
 	}
 	if controllerutil.RemoveFinalizer(conn, vpcPeeringConnectionFinalizer) {
 		if err := r.Update(ctx, conn); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -264,10 +275,13 @@ func (r *VpcPeeringConnectionReconciler) updateStatusWithRetry(ctx context.Conte
 	})
 }
 
-func (r *VpcPeeringConnectionReconciler) setVpcPeeringConnectionErrorCondition(ctx context.Context, conn *iaasv1.VpcPeeringConnection, reason, message string, err error) (ctrl.Result, error) {
+func (r *VpcPeeringConnectionReconciler) setVpcPeeringConnectionErrorCondition(ctx context.Context, conn *iaasv1.VpcPeeringConnection, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&conn.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		conn.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, conn); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

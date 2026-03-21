@@ -60,7 +60,7 @@ type LoadbalancerReconciler struct {
 
 // Reconcile moves the current state of a Loadbalancer toward the desired spec by creating or updating the resource in Thalassa IaaS.
 func (r *LoadbalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var lb iaasv1.Loadbalancer
 	if err := r.Get(ctx, req.NamespacedName, &lb); err != nil {
@@ -81,6 +81,7 @@ func (r *LoadbalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	if controllerutil.AddFinalizer(&lb, loadbalancerFinalizer) {
 		if err := r.Update(ctx, &lb); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -91,30 +92,31 @@ func (r *LoadbalancerReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setLoadbalancerErrorCondition(ctx, &lb, "SubnetNotFound", err.Error(), err)
+		return r.setLoadbalancerErrorCondition(ctx, &lb, "Reconcile", "SubnetNotFound", err.Error(), err)
 	}
 	sgIdentities, err := r.resolveSecurityGroupRefs(ctx, lb.Namespace, lb.Spec.SecurityGroupRefs)
 	if err != nil {
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setLoadbalancerErrorCondition(ctx, &lb, "SecurityGroupNotFound", err.Error(), err)
+		return r.setLoadbalancerErrorCondition(ctx, &lb, "Reconcile", "SecurityGroupNotFound", err.Error(), err)
 	}
 	return r.reconcileLoadbalancer(ctx, lb, subnetIdentity, sgIdentities)
 }
 
 func (r *LoadbalancerReconciler) createLoadbalancer(ctx context.Context, lb iaasv1.Loadbalancer, subnetIdentity string, sgIdentities []string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createLoadbalancer")
 	listeners, err := r.resolveListeners(ctx, lb.Namespace, lb.Spec.Listeners)
 	if err != nil {
 		if errors.Is(err, ErrDependencyNotReady) {
 			return ctrl.Result{RequeueAfter: RequeueAfterDependencyNotReady}, nil
 		}
-		return r.setLoadbalancerErrorCondition(ctx, &lb, "TargetGroupNotFound", err.Error(), err)
+		return r.setLoadbalancerErrorCondition(ctx, &lb, "createLoadbalancer", "TargetGroupNotFound", err.Error(), err)
 	}
 
 	SetStandardConditions(&lb.Status.Conditions, ConditionStateProgressing, "Creating", "Creating loadbalancer in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -130,13 +132,14 @@ func (r *LoadbalancerReconciler) createLoadbalancer(ctx context.Context, lb iaas
 	}
 	created, err := r.IaaSClient.CreateLoadbalancer(ctx, createReq)
 	if err != nil {
-		return r.setLoadbalancerErrorCondition(ctx, &lb, "FailedCreate", err.Error(), err)
+		return r.setLoadbalancerErrorCondition(ctx, &lb, "createLoadbalancer", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	lb.Status.ResourceID = identity
 	lb.Status.ResourceStatus = created.Status
 	lb.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	if err := r.IaaSClient.WaitUntilLoadbalancerIsReady(ctx, identity); err != nil {
@@ -147,7 +150,7 @@ func (r *LoadbalancerReconciler) createLoadbalancer(ctx context.Context, lb iaas
 
 	fetched, err := r.IaaSClient.GetLoadbalancer(ctx, identity)
 	if err != nil {
-		return r.setLoadbalancerErrorCondition(ctx, &lb, "GetFailed", "Failed to get loadbalancer after create", err)
+		return r.setLoadbalancerErrorCondition(ctx, &lb, "createLoadbalancer", "GetFailed", "Failed to get loadbalancer after create", err)
 	}
 	lb.Status.ResourceStatus = fetched.Status
 	lb.Status.ExternalIPAddresses = fetched.ExternalIpAddresses
@@ -155,13 +158,14 @@ func (r *LoadbalancerReconciler) createLoadbalancer(ctx context.Context, lb iaas
 	lb.Status.Hostname = fetched.Hostname
 	SetStandardConditions(&lb.Status.Conditions, ConditionStateAvailable, "Created", "Loadbalancer is created in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *LoadbalancerReconciler) reconcileLoadbalancer(ctx context.Context, lb iaasv1.Loadbalancer, subnetIdentity string, sgIdentities []string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileLoadbalancer")
 	identity := lb.Status.ResourceID
 	if identity == "" {
 		return r.createLoadbalancer(ctx, lb, subnetIdentity, sgIdentities)
@@ -172,11 +176,12 @@ func (r *LoadbalancerReconciler) reconcileLoadbalancer(ctx context.Context, lb i
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&lb.Status.Conditions, ConditionStateDegraded, "NotFound", "Loadbalancer not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setLoadbalancerErrorCondition(ctx, &lb, "NotFound", "Loadbalancer not found in Thalassa", err)
+			return r.setLoadbalancerErrorCondition(ctx, &lb, "reconcileLoadbalancer", "NotFound", "Loadbalancer not found in Thalassa", err)
 		}
-		return r.setLoadbalancerErrorCondition(ctx, &lb, "GetFailed", "Failed to get loadbalancer from Thalassa", err)
+		return r.setLoadbalancerErrorCondition(ctx, &lb, "reconcileLoadbalancer", "GetFailed", "Failed to get loadbalancer from Thalassa", err)
 	}
 
 	if lb.Status.ResourceStatus != fetched.Status ||
@@ -189,6 +194,7 @@ func (r *LoadbalancerReconciler) reconcileLoadbalancer(ctx context.Context, lb i
 		lb.Status.Hostname = fetched.Hostname
 		lb.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -196,6 +202,7 @@ func (r *LoadbalancerReconciler) reconcileLoadbalancer(ctx context.Context, lb i
 		log.Info("updating loadbalancer in Thalassa", "identity", identity)
 		SetStandardConditions(&lb.Status.Conditions, ConditionStateProgressing, "Updating", "Updating loadbalancer in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
@@ -212,50 +219,56 @@ func (r *LoadbalancerReconciler) reconcileLoadbalancer(ctx context.Context, lb i
 			SecurityGroupAttachments: sgIdentities,
 		})
 		if err != nil {
-			return r.setLoadbalancerErrorCondition(ctx, &lb, "UpdateFailed", err.Error(), err)
+			return r.setLoadbalancerErrorCondition(ctx, &lb, "reconcileLoadbalancer", "UpdateFailed", err.Error(), err)
 		}
 		lb.Status.ResourceStatus = updated.Status
 		lb.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		fetched, err = r.IaaSClient.GetLoadbalancer(ctx, identity)
 		if err != nil {
-			return r.setLoadbalancerErrorCondition(ctx, &lb, "GetFailed", "Failed to get loadbalancer after update", err)
+			return r.setLoadbalancerErrorCondition(ctx, &lb, "reconcileLoadbalancer", "GetFailed", "Failed to get loadbalancer after update", err)
 		}
 		lb.Status.ResourceStatus = fetched.Status
 		lb.Status.ExternalIPAddresses = fetched.ExternalIpAddresses
 		lb.Status.InternalIPAddresses = fetched.InternalIpAddresses
 		lb.Status.Hostname = fetched.Hostname
 		if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
 
 	SetStandardConditions(&lb.Status.Conditions, ConditionStateAvailable, "Synced", "Loadbalancer is synced with Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &lb); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *LoadbalancerReconciler) reconcileDelete(ctx context.Context, lb *iaasv1.Loadbalancer) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	if !controllerutil.ContainsFinalizer(lb, loadbalancerFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	identity := lb.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteLoadbalancer(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete loadbalancer in Thalassa")
 			return ctrl.Result{}, err
 		}
 		if err := r.IaaSClient.WaitUntilLoadbalancerIsDeleted(ctx, identity); err != nil {
+			log.Error(err, "failed waiting for loadbalancer deletion")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted loadbalancer in Thalassa", "identity", identity)
 	}
 	if controllerutil.RemoveFinalizer(lb, loadbalancerFinalizer) {
 		if err := r.Update(ctx, lb); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -273,10 +286,13 @@ func (r *LoadbalancerReconciler) updateStatusWithRetry(ctx context.Context, lb *
 	})
 }
 
-func (r *LoadbalancerReconciler) setLoadbalancerErrorCondition(ctx context.Context, lb *iaasv1.Loadbalancer, reason, message string, err error) (ctrl.Result, error) {
+func (r *LoadbalancerReconciler) setLoadbalancerErrorCondition(ctx context.Context, lb *iaasv1.Loadbalancer, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&lb.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		lb.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, lb); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil

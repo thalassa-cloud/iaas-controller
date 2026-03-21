@@ -56,7 +56,7 @@ type VPCReconciler struct {
 
 // Reconcile moves the current state of a VPC toward the desired spec by creating or updating the resource in Thalassa IaaS.
 func (r *VPCReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "Reconcile")
 
 	var vpc iaasv1.VPC
 	if err := r.Get(ctx, req.NamespacedName, &vpc); err != nil {
@@ -84,10 +84,11 @@ func (r *VPCReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Require Region and CIDRBlocks when not using ResourceID
 	if vpc.Spec.Region == "" || len(vpc.Spec.CIDRBlocks) == 0 {
 		err := fmt.Errorf("spec.region and spec.cidrBlocks are required when spec.vpcRef is not set")
-		return r.setVpcErrorCondition(ctx, &vpc, "InvalidSpec", err.Error(), err)
+		return r.setVpcErrorCondition(ctx, &vpc, "Reconcile", "InvalidSpec", err.Error(), err)
 	}
 	if controllerutil.AddFinalizer(&vpc, vpcFinalizer) {
 		if err := r.Update(ctx, &vpc); err != nil {
+			log.Error(err, "failed to add finalizer")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, err
 		}
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
@@ -96,10 +97,11 @@ func (r *VPCReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 }
 
 func (r *VPCReconciler) createVpc(ctx context.Context, vpc iaasv1.VPC) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "createVpc")
 
 	SetStandardConditions(&vpc.Status.Conditions, ConditionStateProgressing, "Creating", "Creating VPC in Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 
@@ -111,13 +113,14 @@ func (r *VPCReconciler) createVpc(ctx context.Context, vpc iaasv1.VPC) (ctrl.Res
 		VpcCidrs:            vpc.Spec.CIDRBlocks,
 	})
 	if err != nil {
-		return r.setVpcErrorCondition(ctx, &vpc, "FailedCreate", err.Error(), err)
+		return r.setVpcErrorCondition(ctx, &vpc, "createVpc", "FailedCreate", err.Error(), err)
 	}
 	identity := created.Identity
 	vpc.Status.ResourceID = identity
 	vpc.Status.ResourceStatus = created.Status
 	vpc.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	if err := r.IaaSClient.WaitUntilVpcIsReady(ctx, identity); err != nil {
@@ -132,13 +135,14 @@ func (r *VPCReconciler) createVpc(ctx context.Context, vpc iaasv1.VPC) (ctrl.Res
 	vpc.Status.ResourceStatus = created.Status
 	vpc.Status.LastReconcileError = ""
 	if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
 }
 
 func (r *VPCReconciler) reconcileVPC(ctx context.Context, vpc iaasv1.VPC) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileVPC")
 	// Create or update in Thalassa
 	identity := vpc.Status.ResourceID
 	if identity == "" {
@@ -151,11 +155,12 @@ func (r *VPCReconciler) reconcileVPC(ctx context.Context, vpc iaasv1.VPC) (ctrl.
 		if thalassaclient.IsNotFound(err) {
 			SetStandardConditions(&vpc.Status.Conditions, ConditionStateDegraded, "NotFound", "VPC not found in Thalassa")
 			if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+				log.Error(updateErr, "failed to update status")
 				return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 			}
-			return r.setVpcErrorCondition(ctx, &vpc, "NotFound", "VPC not found in Thalassa", err)
+			return r.setVpcErrorCondition(ctx, &vpc, "reconcileVPC", "NotFound", "VPC not found in Thalassa", err)
 		}
-		return r.setVpcErrorCondition(ctx, &vpc, "GetFailed", "Failed to get VPC from Thalassa", err)
+		return r.setVpcErrorCondition(ctx, &vpc, "reconcileVPC", "GetFailed", "Failed to get VPC from Thalassa", err)
 	}
 
 	// sync the status
@@ -163,6 +168,7 @@ func (r *VPCReconciler) reconcileVPC(ctx context.Context, vpc iaasv1.VPC) (ctrl.
 		vpc.Status.ResourceStatus = fetched.Status
 		vpc.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -171,6 +177,7 @@ func (r *VPCReconciler) reconcileVPC(ctx context.Context, vpc iaasv1.VPC) (ctrl.
 		log.Info("updating VPC in Thalassa", "identity", identity)
 		SetStandardConditions(&vpc.Status.Conditions, ConditionStateProgressing, "Updating", "Updating VPC in Thalassa")
 		if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
@@ -181,30 +188,36 @@ func (r *VPCReconciler) reconcileVPC(ctx context.Context, vpc iaasv1.VPC) (ctrl.
 			VpcCidrs:    vpc.Spec.CIDRBlocks,
 		})
 		if err != nil {
+			log.Error(err, "failed to update VPC in Thalassa")
 			return ctrl.Result{}, err
 		}
 		vpc.Status.ResourceStatus = updated.Status
 		vpc.Status.LastReconcileError = ""
 		if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 
 		// wait until the VPC is ready
 		if err := r.IaaSClient.WaitUntilVpcIsReady(ctx, identity); err != nil {
+			log.Error(err, "failed to wait until VPC is ready")
 			return ctrl.Result{}, err
 		}
 		fetched, err = r.IaaSClient.GetVpc(ctx, identity)
 		if err != nil {
+			log.Error(err, "failed to get VPC from Thalassa")
 			return ctrl.Result{}, err
 		}
 		vpc.Status.ResourceStatus = fetched.Status
 		if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
 
 	SetStandardConditions(&vpc.Status.Conditions, ConditionStateAvailable, "Synced", "VPC is synced with Thalassa")
 	if updateErr := r.updateStatusWithRetry(ctx, &vpc); updateErr != nil {
+		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
 	return ctrl.Result{}, nil
@@ -212,9 +225,11 @@ func (r *VPCReconciler) reconcileVPC(ctx context.Context, vpc iaasv1.VPC) (ctrl.
 
 // reconcileVPCExternalReference adopts an already-provisioned VPC by spec.ResourceID. No create/update/delete in Thalassa.
 func (r *VPCReconciler) reconcileVPCExternalReference(ctx context.Context, vpc *iaasv1.VPC) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", "reconcileVPCExternalReference")
 	// fetch the VPC from Thalassa
 	fetched, err := r.IaaSClient.GetVpc(ctx, vpc.Spec.ResourceID)
 	if err != nil {
+		log.Error(err, "failed to get VPC from Thalassa")
 		return ctrl.Result{}, err
 	}
 	vpc.Status.ResourceID = vpc.Spec.ResourceID
@@ -222,6 +237,7 @@ func (r *VPCReconciler) reconcileVPCExternalReference(ctx context.Context, vpc *
 	if vpc.Status.ResourceStatus != fetched.Status { // sync the status
 		vpc.Status.ResourceStatus = fetched.Status
 		if updateErr := r.updateStatusWithRetry(ctx, vpc); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -229,6 +245,7 @@ func (r *VPCReconciler) reconcileVPCExternalReference(ctx context.Context, vpc *
 	// set to ready
 	if meta.SetStatusCondition(&vpc.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Synced", Message: ""}) {
 		if updateErr := r.updateStatusWithRetry(ctx, vpc); updateErr != nil {
+			log.Error(updateErr, "failed to update status")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 	}
@@ -236,22 +253,25 @@ func (r *VPCReconciler) reconcileVPCExternalReference(ctx context.Context, vpc *
 }
 
 func (r *VPCReconciler) reconcileDelete(ctx context.Context, vpc *iaasv1.VPC) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithValues("method", "reconcileDelete")
 	if !controllerutil.ContainsFinalizer(vpc, vpcFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	identity := vpc.Status.ResourceID
 	if identity != "" {
 		if err := r.IaaSClient.DeleteVpc(ctx, identity); err != nil && !thalassaclient.IsNotFound(err) {
+			log.Error(err, "failed to delete VPC in Thalassa")
 			return ctrl.Result{}, err
 		}
 		if err := r.IaaSClient.WaitUntilVpcIsDeleted(ctx, identity); err != nil {
+			log.Error(err, "failed waiting for VPC deletion")
 			return ctrl.Result{}, err
 		}
 		log.Info("deleted VPC in Thalassa", "identity", identity)
 	}
 	if controllerutil.RemoveFinalizer(vpc, vpcFinalizer) {
 		if err := r.Update(ctx, vpc); err != nil {
+			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
 	}
@@ -303,10 +323,13 @@ func (r *VPCReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *VPCReconciler) setVpcErrorCondition(ctx context.Context, vpc *iaasv1.VPC, reason, message string, err error) (ctrl.Result, error) {
+func (r *VPCReconciler) setVpcErrorCondition(ctx context.Context, vpc *iaasv1.VPC, method, reason, message string, err error) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithValues("method", method)
+	log.Error(err, "reconciliation error", "reason", reason)
 	if meta.SetStatusCondition(&vpc.Status.Conditions, metav1.Condition{Type: "Error", Status: metav1.ConditionFalse, Reason: reason, Message: message}) {
 		vpc.Status.LastReconcileError = err.Error()
 		if updateErr := r.updateStatusWithRetry(ctx, vpc); updateErr != nil {
+			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
