@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +51,7 @@ type VpcPeeringConnectionReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=vpcs,verbs=get;list;watch
@@ -123,6 +126,7 @@ func (r *VpcPeeringConnectionReconciler) createVpcPeeringConnection(ctx context.
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&conn, corev1.EventTypeNormal, "Provisioned", "VPC peering connection provisioned in Thalassa (id: %s)", created.Identity)
 	return ctrl.Result{}, nil
 }
 
@@ -260,6 +264,7 @@ func (r *VpcPeeringConnectionReconciler) reconcileDelete(ctx context.Context, co
 			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(conn, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -284,6 +289,7 @@ func (r *VpcPeeringConnectionReconciler) setVpcPeeringConnectionErrorCondition(c
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(conn, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -322,6 +328,7 @@ func (r *VpcPeeringConnectionReconciler) resolveVPCRef(ctx context.Context, defa
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *VpcPeeringConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.vpcpeeringconnection")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.VpcPeeringConnection{}).
 		Named("vpcpeeringconnection").

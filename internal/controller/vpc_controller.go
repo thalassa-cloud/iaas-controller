@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +50,7 @@ type VPCReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=vpcs,verbs=get;list;watch;create;update;patch;delete
@@ -138,6 +141,7 @@ func (r *VPCReconciler) createVpc(ctx context.Context, vpc iaasv1.VPC) (ctrl.Res
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&vpc, corev1.EventTypeNormal, "Provisioned", "VPC provisioned in Thalassa (id: %s)", identity)
 	return ctrl.Result{}, nil
 }
 
@@ -274,6 +278,7 @@ func (r *VPCReconciler) reconcileDelete(ctx context.Context, vpc *iaasv1.VPC) (c
 			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(vpc, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -292,6 +297,7 @@ func (r *VPCReconciler) updateStatusWithRetry(ctx context.Context, vpc *iaasv1.V
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *VPCReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.vpc")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.VPC{}).
 		Named("vpc").
@@ -332,6 +338,7 @@ func (r *VPCReconciler) setVpcErrorCondition(ctx context.Context, vpc *iaasv1.VP
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(vpc, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil

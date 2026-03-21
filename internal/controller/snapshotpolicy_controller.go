@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +51,7 @@ type SnapshotPolicyReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=blockvolumes,verbs=get;list;watch
@@ -148,6 +151,7 @@ func (r *SnapshotPolicyReconciler) createSnapshotPolicy(ctx context.Context, sp 
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&sp, corev1.EventTypeNormal, "Provisioned", "Snapshot policy provisioned in Thalassa (id: %s)", identity)
 	log.Info("created snapshot policy in Thalassa", "identity", identity)
 	return ctrl.Result{}, nil
 }
@@ -222,6 +226,7 @@ func (r *SnapshotPolicyReconciler) reconcileDelete(ctx context.Context, sp *iaas
 			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(sp, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	log.Info("deleted snapshot policy in Thalassa", "identity", identity)
 	return ctrl.Result{}, nil
@@ -247,6 +252,7 @@ func (r *SnapshotPolicyReconciler) setSnapshotPolicyErrorCondition(ctx context.C
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(sp, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -341,6 +347,7 @@ func ptrToInt32FromIntPtr(p *int) *int32 {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SnapshotPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.snapshotpolicy")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.SnapshotPolicy{}).
 		Named("snapshotpolicy").

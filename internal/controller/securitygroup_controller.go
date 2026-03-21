@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +51,7 @@ type SecurityGroupReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=vpcs,verbs=get;list;watch
@@ -136,6 +139,7 @@ func (r *SecurityGroupReconciler) createSecurityGroup(ctx context.Context, sg ia
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&sg, corev1.EventTypeNormal, "Provisioned", "Security group provisioned in Thalassa (id: %s)", identity)
 	return ctrl.Result{}, nil
 }
 
@@ -233,6 +237,7 @@ func (r *SecurityGroupReconciler) reconcileDelete(ctx context.Context, sg *iaasv
 		if err := r.Update(ctx, sg); err != nil {
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(sg, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -257,6 +262,7 @@ func (r *SecurityGroupReconciler) setSecurityGroupErrorCondition(ctx context.Con
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(sg, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -353,6 +359,7 @@ func toThalassaRules(rules []iaasv1.SecurityGroupRule) []thalassaiaas.SecurityGr
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SecurityGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.securitygroup")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.SecurityGroup{}).
 		Named("securitygroup").

@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,6 +53,7 @@ type TfsInstanceReconciler struct {
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
 	TFSClient  *tfs.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=vpcs,verbs=get;list;watch
@@ -167,6 +170,7 @@ func (r *TfsInstanceReconciler) createTfsInstance(ctx context.Context, tfsInst i
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&tfsInst, corev1.EventTypeNormal, "Provisioned", "TFS instance provisioned in Thalassa (id: %s)", identity)
 	return ctrl.Result{}, nil
 }
 
@@ -241,6 +245,7 @@ func (r *TfsInstanceReconciler) reconcileDelete(ctx context.Context, tfsInst *ia
 			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(tfsInst, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -265,6 +270,7 @@ func (r *TfsInstanceReconciler) setTfsInstanceErrorCondition(ctx context.Context
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(tfsInst, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -406,6 +412,7 @@ func (r *TfsInstanceReconciler) resolveSecurityGroupRefs(ctx context.Context, de
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *TfsInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.tfsinstance")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.TfsInstance{}).
 		Named("tfsinstance").

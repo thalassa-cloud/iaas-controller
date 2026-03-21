@@ -22,10 +22,12 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +50,7 @@ type RouteTableRouteReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=routetables,verbs=get;list;watch
@@ -147,6 +150,7 @@ func (r *RouteTableRouteReconciler) createRouteTableRoute(ctx context.Context, r
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&route, corev1.EventTypeNormal, "Provisioned", "Route table route provisioned in Thalassa (id: %s)", created.Identity)
 	return ctrl.Result{}, nil
 }
 
@@ -197,7 +201,10 @@ func (r *RouteTableRouteReconciler) reconcileDelete(ctx context.Context, route *
 	rtIdentity, err := r.resolveRouteTableRef(ctx, route.Namespace, route.Spec.RouteTableRef)
 	if err != nil {
 		if controllerutil.RemoveFinalizer(route, routeTableRouteFinalizer) {
-			_ = r.Update(ctx, route)
+			if err := r.Update(ctx, route); err != nil {
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Eventf(route, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 		}
 		return ctrl.Result{}, nil
 	}
@@ -214,6 +221,7 @@ func (r *RouteTableRouteReconciler) reconcileDelete(ctx context.Context, route *
 			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(route, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -238,6 +246,7 @@ func (r *RouteTableRouteReconciler) setRouteTableRouteErrorCondition(ctx context
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(route, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -296,6 +305,7 @@ func (r *RouteTableRouteReconciler) resolveTargetGatewayRef(ctx context.Context,
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *RouteTableRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.routetableroute")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.RouteTableRoute{}).
 		Named("routetableroute").

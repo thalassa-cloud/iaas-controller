@@ -23,10 +23,12 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +51,7 @@ type TargetGroupReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=vpcs,verbs=get;list;watch
@@ -123,6 +126,7 @@ func (r *TargetGroupReconciler) createTargetGroup(ctx context.Context, tg iaasv1
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&tg, corev1.EventTypeNormal, "Provisioned", "Target group provisioned in Thalassa (id: %s)", created.Identity)
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 }
 
@@ -273,6 +277,7 @@ func (r *TargetGroupReconciler) reconcileDelete(ctx context.Context, tg *iaasv1.
 		if err := r.Update(ctx, tg); err != nil {
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(tg, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -297,6 +302,7 @@ func (r *TargetGroupReconciler) setTargetGroupErrorCondition(ctx context.Context
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(tg, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -322,6 +328,7 @@ func (r *TargetGroupReconciler) resolveVPCRef(ctx context.Context, defaultNamesp
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *TargetGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.targetgroup")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.TargetGroup{}).
 		Named("targetgroup").

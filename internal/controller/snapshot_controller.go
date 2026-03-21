@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +51,7 @@ type SnapshotReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=blockvolumes,verbs=get;list;watch
@@ -140,6 +143,7 @@ func (r *SnapshotReconciler) createSnapshot(ctx context.Context, snap iaasv1.Sna
 		log.Error(updateErr, "failed to update status")
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&snap, corev1.EventTypeNormal, "Provisioned", "Snapshot provisioned in Thalassa (id: %s)", identity)
 	return ctrl.Result{}, nil
 }
 
@@ -212,6 +216,7 @@ func (r *SnapshotReconciler) reconcileDelete(ctx context.Context, snap *iaasv1.S
 			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(snap, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -236,6 +241,7 @@ func (r *SnapshotReconciler) setSnapshotErrorCondition(ctx context.Context, snap
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(snap, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -280,6 +286,7 @@ func (r *SnapshotReconciler) resolveVolumeRef(ctx context.Context, defaultNamesp
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SnapshotReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.snapshot")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.Snapshot{}).
 		Named("snapshot").

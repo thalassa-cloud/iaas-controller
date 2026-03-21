@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +51,7 @@ type SubnetReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	IaaSClient *thalassaiaas.Client
+	Recorder   record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=iaas.controllers.thalassa.cloud,resources=vpcs,verbs=get;list;watch
@@ -144,6 +147,7 @@ func (r *SubnetReconciler) createSubnet(ctx context.Context, subnet iaasv1.Subne
 	if updateErr := r.updateStatusWithRetry(ctx, &subnet); updateErr != nil {
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 	}
+	r.Recorder.Eventf(&subnet, corev1.EventTypeNormal, "Provisioned", "Subnet provisioned in Thalassa (id: %s)", identity)
 	return ctrl.Result{}, nil
 }
 
@@ -266,6 +270,7 @@ func (r *SubnetReconciler) reconcileDelete(ctx context.Context, subnet *iaasv1.S
 			log.Error(err, "failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
+		r.Recorder.Eventf(subnet, corev1.EventTypeNormal, "Deleted", "Finished deletion")
 	}
 	return ctrl.Result{}, nil
 }
@@ -291,6 +296,7 @@ func (r *SubnetReconciler) setSubnetErrorCondition(ctx context.Context, subnet *
 			log.Error(updateErr, "failed to persist error condition")
 			return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, updateErr
 		}
+		r.Recorder.Eventf(subnet, corev1.EventTypeWarning, reason, "%s", message)
 		return ctrl.Result{RequeueAfter: RequeueAfterStatusUpdateFailure}, nil
 	}
 	return ctrl.Result{}, nil
@@ -330,6 +336,7 @@ func (r *SubnetReconciler) resolveVPCRef(ctx context.Context, defaultNamespace s
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SubnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("iaas-controller.subnet")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iaasv1.Subnet{}).
 		Named("subnet").
